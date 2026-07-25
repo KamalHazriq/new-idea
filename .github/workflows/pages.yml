@@ -23,10 +23,14 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        # Turns Pages on via the API the first time this runs, so the repo
+        # doesn't need the Settings → Pages → Source toggle flipped by hand.
+        with:
+          enablement: true
 
       - name: Assemble site
         run: |
