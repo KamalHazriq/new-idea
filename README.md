@@ -1,7 +1,7 @@
 # Worm Runner 🪱
 
 An endless runner in the spirit of the Chrome dino game — except you're a worm,
-the cacti are baguettes, and the bird is a meteor.
+the cacti are baguettes, and the bird is a meteor shower.
 
 **Jump the baguettes. Duck the meteors.**
 
@@ -14,7 +14,9 @@ the cacti are baguettes, and the bird is a meteor.
 | Start / restart | `Space` / `Enter` / `R` | tap anywhere |
 
 Holding jump goes higher; releasing early cuts the arc short. Ducking in mid-air
-drops you fast.
+drops you fast. The 🔊 toggle in the corner mutes the sound and remembers your
+choice; audio is only ever created after you press something, so the page is
+silent until you actually start a run.
 
 ## How it works
 
@@ -29,9 +31,26 @@ and no dependencies.
 
 Difficulty scales the way the original does: speed ramps up over time, obstacle
 gaps are measured in *time to arrive* rather than fixed distance so fast play
-stays fair, and meteors only start showing up past 260 points. Meteors dive in
-from the top and level off at duck height — the dive always covers the same
-horizontal distance, so the warning you get is the same at any speed.
+stays fair, and meteors only start showing up past 260 points.
+
+Two rules keep both obstacles honest, and both fall out of the jump arc rather
+than being hand-tuned:
+
+- **Baguette clusters can always be cleared.** `clearableSpan()` solves the arc
+  for the two moments it crosses the top of the tallest loaf, subtracts the lag
+  before the rearmost collision probe gets up there, and turns the remainder
+  into world distance. Spawning stops adding loaves at that limit, so a group
+  is either tall and narrow or wide and low — never an impossible wall.
+- **Meteors can never be jumped.** Because the jump must clear a 62-unit
+  baguette, its apex is far above any single low-flying rock — so one rock could
+  always just be jumped over, and ducking would be decoration. Meteors therefore
+  arrive as a vertical shower tall enough to reach past the top of the arc,
+  leaving exactly one way through: flat on the ground. Each rock's dive covers
+  the same horizontal run whatever its height, so they streak in staggered, all
+  level off together, and the warning is identical at any speed.
+
+Dying holds the frame for a moment and outlines the obstacle that got you —
+with only the front of the worm lethal, "what hit me?" deserves an answer.
 
 ## Running it locally
 

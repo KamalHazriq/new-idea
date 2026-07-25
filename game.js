@@ -56,9 +56,14 @@
   const BAGUETTE_MAX_SPAN = 110;  // reference units; purely a look/variety cap
   const JUMP_MARGIN = 0.8;        // slack left for human timing, vs. perfect play
 
-  const METEOR_H = 38;           // centre above ground once it levels off;
-                                 // low enough that a standing worm is always
-                                 // struck, high enough that a flat one clears
+  // Meteors arrive as a vertical shower, not a single rock, and that is load
+  // bearing. The jump has to clear a 62-unit baguette, which puts the worm's
+  // apex far above any single low-flying rock — so one rock could always simply
+  // be jumped, and ducking would be decoration. A column tall enough to reach
+  // past the top of the jump arc leaves exactly one way through: underneath.
+  const METEOR_H = 36;           // lowest rock's centre above the ground
+  const METEOR_GAP = 25;         // vertical spacing up the column
+  const METEOR_ROCKS = 5;        // tops out above the jump arc — see above
   const METEOR_R = 14;
   const METEOR_FALL_RUN = 300;   // horizontal distance the dive takes, at any speed
   const METEOR_UNLOCK = 260;     // score at which meteors join in
@@ -66,6 +71,10 @@
 
   const SCORE_RATE = 0.06;
   const HI_KEY = 'wormrunner.hi';
+  const MUTE_KEY = 'wormrunner.muted';
+
+  const HITSTOP = 0.16;          // seconds the impact frame is held
+  const SHAKE_MAX = 7;
 
   const COL = {
     sky0: '#dceffb', sky1: '#fdf4e2',
@@ -93,6 +102,7 @@
   const overlayHint = document.getElementById('overlayHint');
   const btnJump = document.getElementById('btnJump');
   const btnDuck = document.getElementById('btnDuck');
+  const btnMute = document.getElementById('btnMute');
 
   /* ------------------------------------------------------------------ *
    * State
@@ -113,6 +123,16 @@
   let spawnGap = 0;              // reference distance until the next obstacle
   let overAt = 0;
 
+  // Death feedback. The run stops on the frame of impact, but the overlay is
+  // held back for `hitstop` seconds so the moment stays visible — with only the
+  // worm's front three samples lethal, "what hit me?" is otherwise a fair
+  // question, and the flash answers it.
+  let spine = null;              // this frame's worm geometry, computed once
+  let hitstop = 0;
+  let shake = 0;
+  let flash = 0;
+  let culprit = null;
+
   const worm = { y: GROUND_Y - STAND_H, vy: 0, onGround: true, ducking: false, duckT: 0, wave: 0 };
   const trail = [];              // [{ d, y }] ascending by d — head height history
   const obstacles = [];
@@ -131,6 +151,69 @@
   }
 
   function pad5(n) { return String(Math.floor(n)).padStart(5, '0'); }
+
+  /* ------------------------------------------------------------------ *
+   * Sound — tiny synthesised blips, no asset files
+   * ------------------------------------------------------------------ */
+
+  let audio = null;
+  let muted = (() => {
+    try { return localStorage.getItem(MUTE_KEY) === '1'; } catch { return false; }
+  })();
+
+  // The context is built on the first blip, which can only follow a keypress or
+  // tap, since that is what starts a run. So nothing ever sounds unbidden on
+  // page load, and browsers' autoplay rules are satisfied for free.
+  function audioCtx() {
+    if (!audio) {
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      if (!Ctor) return null;
+      try { audio = new Ctor(); } catch { return null; }
+    }
+    if (audio.state === 'suspended') audio.resume();
+    return audio;
+  }
+
+  function blip({ freq, to, dur, type = 'square', gain = 0.05, delay = 0 }) {
+    if (muted) return;
+    const ac = audioCtx();
+    if (!ac) return;
+
+    const t0 = ac.currentTime + delay;
+    const osc = ac.createOscillator();
+    const vol = ac.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    if (to && to !== freq) osc.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+    vol.gain.setValueAtTime(0.0001, t0);
+    vol.gain.linearRampToValueAtTime(gain, t0 + 0.008);
+    vol.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(vol).connect(ac.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  const sfx = {
+    jump: () => blip({ freq: 420, to: 780, dur: 0.11, gain: 0.045 }),
+    duck: () => blip({ freq: 300, to: 140, dur: 0.09, type: 'triangle', gain: 0.04 }),
+    land: () => blip({ freq: 170, to: 110, dur: 0.06, type: 'triangle', gain: 0.03 }),
+    point: () => {
+      blip({ freq: 880, dur: 0.07, gain: 0.035 });
+      blip({ freq: 1320, dur: 0.09, gain: 0.035, delay: 0.075 });
+    },
+    die: () => {
+      blip({ freq: 420, to: 80, dur: 0.4, type: 'sawtooth', gain: 0.055 });
+      blip({ freq: 190, to: 55, dur: 0.5, gain: 0.035, delay: 0.05 });
+    },
+  };
+
+  function setMuted(on) {
+    muted = on;
+    btnMute.textContent = on ? '🔇' : '🔊';
+    btnMute.setAttribute('aria-pressed', String(on));
+    btnMute.setAttribute('aria-label', on ? 'Unmute sound' : 'Mute sound');
+    try { localStorage.setItem(MUTE_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+  }
 
   /* ------------------------------------------------------------------ *
    * Viewport
@@ -176,6 +259,10 @@
     shownScore = -1;
     nextMilestone = 100;
     spawnGap = 420;
+    hitstop = 0;
+    shake = 0;
+    flash = 0;
+    culprit = null;
 
     worm.y = standY();
     worm.vy = 0;
@@ -190,6 +277,7 @@
     // Seed the trail so the body starts stretched out, not piled on the head.
     trail.length = 0;
     for (let d = -MAX_LOOKBACK; d <= 0; d += 6) trail.push({ d, y: worm.y });
+    spine = wormSpine();
 
     buildScenery();
     updateHud();
@@ -221,17 +309,23 @@
     setOverlay();
   }
 
-  function gameOver() {
+  function gameOver(hit) {
     state = 'over';
     overAt = performance.now();
     worm.ducking = false;
-    burst(headX, worm.y, 14, COL.bodyDark);
+    culprit = hit;
+    hitstop = HITSTOP;
+    shake = SHAKE_MAX;
+    flash = 1;
+    burst(headX, worm.y, 16, COL.bodyDark);
+    sfx.die();
     if (Math.floor(score) > hiScore) {
       hiScore = Math.floor(score);
       writeHi(hiScore);
     }
     updateHud();
-    setOverlay();
+    // Overlay deliberately withheld until the hitstop expires, so the frame of
+    // impact is readable before the card covers it.
   }
 
   function setOverlay() {
@@ -332,7 +426,9 @@
     else spawnBaguettes();
 
     // Gap measured in time-to-arrive, so high speeds stay fair.
-    spawnGap = speed * (0.78 + Math.random() * 0.85);
+    // Minimum gap now exceeds the hang time, so landing from a baguette always
+    // leaves room to get flat before a meteor shower arrives.
+    spawnGap = speed * (0.95 + Math.random() * 0.8);
   }
 
   // The widest cluster the worm can actually clear right now, derived from the
@@ -383,30 +479,38 @@
   }
 
   function spawnMeteor() {
-    const startY = -30;
-    const targetY = GROUND_Y - METEOR_H;
     const vxMag = vx() * 1.06;
-    // Scale the dive so it always covers the same horizontal run — the player
-    // gets the same warning at 300 units/s as at 800.
-    const vy = (targetY - startY) * vxMag / (METEOR_FALL_RUN * widthFactor);
+    const run = METEOR_FALL_RUN * widthFactor;
+    const rocks = [];
 
-    const verts = [];
-    for (let i = 0; i < 9; i++) verts.push(1 - Math.random() * 0.3);
+    for (let i = 0; i < METEOR_ROCKS; i++) {
+      const targetY = GROUND_Y - (METEOR_H + i * METEOR_GAP);
+      const startY = -30 - i * 22;
 
-    const craters = [];
-    for (let i = 0; i < 3; i++) {
-      craters.push({
-        a: Math.random() * Math.PI * 2,
-        d: Math.random() * 0.5,
-        r: 0.13 + Math.random() * 0.14,
+      const verts = [];
+      for (let v = 0; v < 9; v++) verts.push(1 - Math.random() * 0.3);
+
+      const craters = [];
+      for (let c = 0; c < 3; c++) {
+        craters.push({
+          a: Math.random() * Math.PI * 2,
+          d: Math.random() * 0.5,
+          r: 0.13 + Math.random() * 0.14,
+        });
+      }
+
+      rocks.push({
+        y: startY, targetY,
+        // Each rock's dive covers the same horizontal run whatever its height,
+        // so they streak in staggered and all level off together — and the
+        // warning is the same at 300 units/s as at 800.
+        vy: (targetY - startY) * vxMag / run,
+        r: METEOR_R * (0.86 + Math.random() * 0.22),
+        verts, craters, spin: Math.random() * Math.PI * 2,
       });
     }
 
-    obstacles.push({
-      type: 'meteor',
-      x: worldW + 30, y: startY, targetY, vy, vxMag,
-      r: METEOR_R, verts, craters, spin: Math.random() * Math.PI * 2,
-    });
+    obstacles.push({ type: 'meteor', x: worldW + 30, vxMag, rocks });
   }
 
   /* ------------------------------------------------------------------ *
@@ -482,7 +586,10 @@
     return dx * dx + dy * dy < rr * rr;
   }
 
-  function hitsAnything(pts) {
+  // Returns the obstacle that struck the worm, or null. Handing back the
+  // culprit rather than a boolean is what lets the death feedback flash the
+  // thing that actually got you.
+  function hitFrom(pts) {
     const probes = [];
     for (let i = 0; i < HIT_PROBES && i < pts.length; i++) {
       probes.push({ x: pts[i].x, y: pts[i].y, r: pts[i].r * HIT_SHRINK });
@@ -495,17 +602,19 @@
           const rx = o.x + p.dx;
           const ry = GROUND_Y - p.h;
           for (const c of probes) {
-            if (circleRect(c.x, c.y, c.r, rx, ry, p.w, p.h)) return true;
+            if (circleRect(c.x, c.y, c.r, rx, ry, p.w, p.h)) return o;
           }
         }
       } else {
         if (Math.abs(o.x - headX) > 90) continue;
-        for (const c of probes) {
-          if (circleCircle(c.x, c.y, c.r, o.x, o.y, o.r * 0.84)) return true;
+        for (const rock of o.rocks) {
+          for (const c of probes) {
+            if (circleCircle(c.x, c.y, c.r, o.x, rock.y, rock.r * 0.84)) return o;
+          }
         }
       }
     }
-    return false;
+    return null;
   }
 
   /* ------------------------------------------------------------------ *
@@ -526,6 +635,7 @@
         scoreEl.classList.remove('flash');
         void scoreEl.offsetWidth;        // restart the CSS animation
         scoreEl.classList.add('flash');
+        sfx.point();
       }
       updateHud();
     }
@@ -548,12 +658,24 @@
           worm.vy = 0;
           worm.onGround = true;
           dust(headX - 6, GROUND_Y, 7);
+          sfx.land();
         }
       } else {
         worm.y += (restY() - worm.y) * Math.min(1, dt * 18);
       }
     }
     pushTrail();
+    // Computed once here and reused by both the collision test and the
+    // renderer — it used to be built twice per frame from the same inputs.
+    spine = wormSpine();
+
+    /* --- death feedback --- */
+    if (hitstop > 0) {
+      hitstop -= dt;
+      if (hitstop <= 0) setOverlay();
+    }
+    if (shake > 0) shake = Math.max(0, shake - dt * 26);
+    if (flash > 0) flash = Math.max(0, flash - dt * 2.2);
 
     /* --- obstacles --- */
     if (state === 'running') {
@@ -568,17 +690,23 @@
         } else {
           o.vxMag = ws * 1.06;
           o.x -= o.vxMag * dt;
-          o.spin += dt * 3.2;
-          if (o.y < o.targetY) {
-            o.y = Math.min(o.targetY, o.y + o.vy * dt);
-            if (o.y >= o.targetY) o.vy = 0;
+          for (const rock of o.rocks) {
+            rock.spin += dt * 3.2;
+            if (rock.y < rock.targetY) {
+              rock.y = Math.min(rock.targetY, rock.y + rock.vy * dt);
+              if (rock.y >= rock.targetY) rock.vy = 0;
+            }
           }
-          if (Math.random() < 0.6) spark(o.x + o.r * 0.8, o.y - o.r * 0.3);
+          if (Math.random() < 0.75) {
+            const rock = o.rocks[(Math.random() * o.rocks.length) | 0];
+            spark(o.x + rock.r * 0.8, rock.y - rock.r * 0.3);
+          }
           if (o.x < -60) obstacles.splice(i, 1);
         }
       }
 
-      if (hitsAnything(wormSpine())) gameOver();
+      const hit = hitFrom(spine);
+      if (hit) gameOver(hit);
     }
 
     /* --- scenery --- */
@@ -645,11 +773,12 @@
   }
 
   function drawGround() {
+    // Overdrawn past every edge so a shake offset never reveals bare canvas.
     ctx.fillStyle = COL.ground;
-    ctx.fillRect(0, GROUND_Y, worldW, WORLD_H - GROUND_Y);
+    ctx.fillRect(-12, GROUND_Y, worldW + 24, WORLD_H - GROUND_Y + 14);
 
     ctx.fillStyle = COL.groundDark;
-    ctx.fillRect(0, GROUND_Y, worldW, 2.5);
+    ctx.fillRect(-12, GROUND_Y, worldW + 24, 2.5);
 
     ctx.strokeStyle = COL.pebble;
     ctx.lineWidth = 1.6;
@@ -700,40 +829,40 @@
     ctx.restore();
   }
 
-  function drawMeteor(o) {
-    const len = Math.hypot(o.vxMag, o.vy) || 1;
-    const dx = o.vxMag / len;              // opposite the direction of travel
+  function drawMeteorRock(x, o, vxMag) {
+    const len = Math.hypot(vxMag, o.vy) || 1;
+    const dx = vxMag / len;                // opposite the direction of travel
     const dy = -o.vy / len;
     const flick = 0.85 + Math.sin(worm.wave * 3.1 + o.spin) * 0.15;
     const L = o.r * 3.4 * flick;
 
-    const tipX = o.x + dx * L;
+    const tipX = x + dx * L;
     const tipY = o.y + dy * L;
     const px = -dy * o.r * 0.85;
     const py = dx * o.r * 0.85;
 
-    const fg = ctx.createLinearGradient(o.x, o.y, tipX, tipY);
+    const fg = ctx.createLinearGradient(x, o.y, tipX, tipY);
     fg.addColorStop(0, COL.flameMid);
     fg.addColorStop(1, COL.flameOuter);
     ctx.beginPath();
-    ctx.moveTo(o.x + px, o.y + py);
+    ctx.moveTo(x + px, o.y + py);
     ctx.lineTo(tipX, tipY);
-    ctx.lineTo(o.x - px, o.y - py);
+    ctx.lineTo(x - px, o.y - py);
     ctx.closePath();
     ctx.fillStyle = fg;
     ctx.fill();
 
     ctx.beginPath();
-    ctx.moveTo(o.x + px * 0.5, o.y + py * 0.5);
-    ctx.lineTo(o.x + dx * L * 0.55, o.y + dy * L * 0.55);
-    ctx.lineTo(o.x - px * 0.5, o.y - py * 0.5);
+    ctx.moveTo(x + px * 0.5, o.y + py * 0.5);
+    ctx.lineTo(x + dx * L * 0.55, o.y + dy * L * 0.55);
+    ctx.lineTo(x - px * 0.5, o.y - py * 0.5);
     ctx.closePath();
     ctx.fillStyle = COL.flameCore;
     ctx.fill();
 
     // Rock.
     ctx.save();
-    ctx.translate(o.x, o.y);
+    ctx.translate(x, o.y);
     ctx.rotate(o.spin);
     ctx.beginPath();
     for (let i = 0; i < o.verts.length; i++) {
@@ -761,7 +890,7 @@
     // Leading edge catches the light.
     ctx.globalAlpha = 0.5;
     ctx.beginPath();
-    ctx.arc(o.x - o.r * 0.35, o.y + o.r * 0.3, o.r * 0.3, 0, Math.PI * 2);
+    ctx.arc(x - o.r * 0.35, o.y + o.r * 0.3, o.r * 0.3, 0, Math.PI * 2);
     ctx.fillStyle = COL.rockLight;
     ctx.fill();
     ctx.globalAlpha = 1;
@@ -894,20 +1023,57 @@
     ctx.globalAlpha = 1;
   }
 
+  // Paints the obstacle that ended the run in hot white, fading out — so the
+  // answer to "what hit me?" is on screen before the game-over card arrives.
+  function drawCulprit(o) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, flash) * 0.85;
+    ctx.fillStyle = '#fff6e8';
+    ctx.strokeStyle = '#ff5a3c';
+    ctx.lineWidth = 3;
+
+    if (o.type === 'baguette') {
+      for (const p of o.parts) {
+        roundRectPath(o.x + p.dx, GROUND_Y - p.h, p.w, p.h, p.w / 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    } else {
+      for (const rock of o.rocks) {
+        ctx.beginPath();
+        ctx.arc(o.x, rock.y, rock.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   function draw() {
+    // Sky first and unshaken: it covers the whole canvas, so the shake below
+    // can never expose an unpainted edge.
     drawBackground();
+
+    ctx.save();
+    if (shake > 0) {
+      ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    }
+
     drawGround();
 
     for (const o of obstacles) {
       if (o.type === 'baguette') {
         for (const p of o.parts) drawBaguette(o.x + p.dx, p.h, p.w, p.lean);
       } else {
-        drawMeteor(o);
+        for (const rock of o.rocks) drawMeteorRock(o.x, rock, o.vxMag);
       }
     }
 
-    drawWorm(wormSpine());
+    if (culprit && flash > 0) drawCulprit(culprit);
+
+    drawWorm(spine);
     drawParticles();
+    ctx.restore();
   }
 
   /* ------------------------------------------------------------------ *
@@ -924,6 +1090,7 @@
       worm.vy = JUMP_V;
       worm.onGround = false;
       dust(headX - 8, GROUND_Y, 5);
+      sfx.jump();
     }
   }
 
@@ -932,7 +1099,9 @@
   }
 
   function setDuck(on) {
-    worm.ducking = state === 'running' ? on : false;
+    const want = state === 'running' ? on : false;
+    if (want && !worm.ducking && worm.onGround) sfx.duck();
+    worm.ducking = want;
   }
 
   addEventListener('keydown', (e) => {
@@ -968,6 +1137,12 @@
 
   bindPad(btnJump, pressJump, releaseJump);
   bindPad(btnDuck, () => setDuck(true), () => setDuck(false));
+
+  btnMute.addEventListener('click', () => {
+    setMuted(!muted);
+    if (!muted) sfx.point();       // confirm it's back on
+  });
+  setMuted(muted);
 
   stage.addEventListener('pointerdown', (e) => { e.preventDefault(); pressJump(); });
   stage.addEventListener('pointerup', releaseJump);
