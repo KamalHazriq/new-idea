@@ -67,8 +67,23 @@ body {
   letter-spacing: 0.02em;
 }
 
+.mute {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: clamp(14px, 3.8vw, 18px);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mute[aria-pressed="true"] { opacity: 0.4; }
+
 .scores {
   display: flex;
+  align-items: center;
   gap: 12px;
   font: 600 clamp(13px, 3.6vw, 17px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.08em;
