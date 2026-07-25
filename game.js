@@ -24,8 +24,8 @@
   const GROUND_Y = WORLD_H - GROUND_OFFSET;
   const REF_W = 800;             // width the speed numbers below assume
 
-  const GRAVITY = 2050;
-  const JUMP_V = -600;           // apex ≈ 88 units, hang time ≈ 0.58 s
+  const GRAVITY = 2000;
+  const JUMP_V = -680;           // apex ≈ 116 units, hang time ≈ 0.68 s
   const JUMP_CUT = 0.45;         // vy kept when jump is released early
   const FAST_FALL = 1.9;         // extra gravity while ducking mid-air
 
@@ -33,18 +33,32 @@
   const MAX_SPEED = 820;
   const ACCEL = 6;               // units/s gained per second
 
-  const SEGMENTS = 10;
-  const SEG_SPACING = 10;        // body length ≈ 100 units — short enough to
-                                 // leave road visible in a narrow phone world,
-                                 // tight enough that the segments stay fused
+  const SEGMENTS = 16;           // spine samples; the body is drawn as one
+  const SEG_SPACING = 7.2;       // continuous tube through them, not as beads
+  const WAVE_STEP = 0.5;         // ≈1.2 wavelengths along the body
+  // Wriggle amplitude ramps from almost nothing at the head to full at the tail.
+  // Beyond looking right — the head leads, the body follows — this keeps the
+  // collision probes at a predictable height: a bobbing head would sometimes
+  // duck under a meteor on its own, which would wreck the duck mechanic.
+  const WAVE_AMP = 14;
   const HEAD_R = 11;
   const STAND_H = 22;            // head centre above the ground, standing
   const DUCK_H = 10;             // …and flattened
 
+  // Only the front of the worm can collide. The tail replays the head's height
+  // from earlier, so it hangs low through a jump; making it lethal would mean
+  // the worm gets killed by a baguette it has visibly already cleared.
+  const HIT_PROBES = 3;
+  const HIT_SHRINK = 0.8;        // hitboxes sit inside the drawn body
+
   const BAGUETTE_MIN_H = 34;
   const BAGUETTE_MAX_H = 62;
+  const BAGUETTE_MAX_SPAN = 110;  // reference units; purely a look/variety cap
+  const JUMP_MARGIN = 0.8;        // slack left for human timing, vs. perfect play
 
-  const METEOR_H = 42;           // centre above ground once it levels off
+  const METEOR_H = 38;           // centre above ground once it levels off;
+                                 // low enough that a standing worm is always
+                                 // struck, high enough that a flat one clears
   const METEOR_R = 14;
   const METEOR_FALL_RUN = 300;   // horizontal distance the dive takes, at any speed
   const METEOR_UNLOCK = 260;     // score at which meteors join in
@@ -276,23 +290,35 @@
    * Worm geometry — shared by the renderer and the collision test
    * ------------------------------------------------------------------ */
 
-  function wormPoints() {
-    // Ducking shrinks the body; spacing barely stretches, because segments that
-    // drift further apart than their radii stop reading as one animal.
+  function wormSpine() {
     const spacing = SEG_SPACING * (1 + 0.05 * worm.duckT);
     const baseR = HEAD_R * (1 - 0.38 * worm.duckT);
-    const amp = (7 - 4 * worm.duckT) * (worm.onGround ? 1 : 0.45);
+    const amp = WAVE_AMP * (1 - 0.57 * worm.duckT) * (worm.onGround ? 1 : 0.5);
     const pts = [];
 
     for (let i = 0; i < SEGMENTS; i++) {
       const t = i / (SEGMENTS - 1);
-      // The tail whips wider than the head — that's what sells the wriggle.
-      const a = amp * (0.55 + 0.75 * t);
+      // The tail whips wide while the head barely stirs — that's the wriggle.
+      const a = amp * (0.06 + 0.94 * Math.pow(t, 1.25));
       pts.push({
         x: headX - i * spacing,
-        y: sampleTrail(traveled - i * spacing) + Math.sin(worm.wave - i * 0.72) * a,
-        r: baseR * (i === 0 ? 1.05 : 1 - 0.42 * t),
+        y: sampleTrail(traveled - i * spacing) + Math.sin(worm.wave - i * WAVE_STEP) * a,
+        r: baseR * (1.05 - 0.85 * t * t),   // full-bodied, tapering to a point
+        nx: 0,
+        ny: 0,
       });
+    }
+
+    // Unit normal at each sample, from the local head-ward tangent. The tube
+    // renderer offsets along these to build the two edges of the body.
+    for (let i = 0; i < SEGMENTS; i++) {
+      const ahead = pts[Math.max(0, i - 1)];
+      const behind = pts[Math.min(SEGMENTS - 1, i + 1)];
+      const tx = ahead.x - behind.x;
+      const ty = ahead.y - behind.y;
+      const len = Math.hypot(tx, ty) || 1;
+      pts[i].nx = -ty / len;
+      pts[i].ny = tx / len;
     }
     return pts;
   }
@@ -309,17 +335,51 @@
     spawnGap = speed * (0.78 + Math.random() * 0.85);
   }
 
+  // The widest cluster the worm can actually clear right now, derived from the
+  // jump arc rather than guessed: solve the arc for the two times it crosses
+  // the top of the tallest loaf, subtract the lag before the rearmost collision
+  // probe gets up there too, and convert what's left into world distance.
+  function clearableSpan(tallest, ws) {
+    const headR = HEAD_R * 1.05 * HIT_SHRINK;
+    const rise = tallest + headR - STAND_H;
+    const disc = JUMP_V * JUMP_V - 2 * GRAVITY * rise;
+    if (disc <= 0) return 0;                       // can't be jumped at all
+
+    const airborne = Math.sqrt(disc) * 2 / GRAVITY;  // t1 - t0
+    const reach = (HIT_PROBES - 1) * SEG_SPACING;    // rear probe's offset
+    const clear = airborne - reach / Math.max(1, ws);
+    return Math.max(0, clear * ws - (reach + 2 * headR));
+  }
+
   function spawnBaguettes() {
     const count = Math.random() < 0.58 ? 1 : (Math.random() < 0.7 ? 2 : 3);
+    const ws = vx();
     const parts = [];
     let dx = 0;
+    let span = 0;
+    let tallest = 0;
+
     for (let i = 0; i < count; i++) {
-      const w = 16 + Math.random() * 8;
+      const w = (17 + Math.random() * 9) * widthFactor;
       const h = BAGUETTE_MIN_H + Math.random() * (BAGUETTE_MAX_H - BAGUETTE_MIN_H);
+      const nextSpan = dx + w;
+      const nextTallest = Math.max(tallest, h);
+
+      // Always place the first loaf; past that, stop as soon as the cluster
+      // would outgrow what the jump can carry. Tall loaves shrink the budget,
+      // so a group is naturally either tall and narrow or wide and low —
+      // never a wall that's impossible whatever the player does.
+      if (i && nextSpan > Math.min(
+        clearableSpan(nextTallest, ws) * JUMP_MARGIN,
+        BAGUETTE_MAX_SPAN * widthFactor,
+      )) break;
+
       parts.push({ dx, w, h, lean: (Math.random() - 0.5) * 0.16 });
-      dx += w + 3 + Math.random() * 5;
+      span = nextSpan;
+      tallest = nextTallest;
+      dx = span + (4 + Math.random() * 5) * widthFactor;
     }
-    obstacles.push({ type: 'baguette', x: worldW + 20, w: dx, parts });
+    obstacles.push({ type: 'baguette', x: worldW + 20, w: span, parts });
   }
 
   function spawnMeteor() {
@@ -423,10 +483,9 @@
   }
 
   function hitsAnything(pts) {
-    // Only the leading segments can hit — the tail trails harmlessly behind.
     const probes = [];
-    for (let i = 0; i < 4 && i < pts.length; i++) {
-      probes.push({ x: pts[i].x, y: pts[i].y, r: pts[i].r * 0.82 });
+    for (let i = 0; i < HIT_PROBES && i < pts.length; i++) {
+      probes.push({ x: pts[i].x, y: pts[i].y, r: pts[i].r * HIT_SHRINK });
     }
 
     for (const o of obstacles) {
@@ -519,7 +578,7 @@
         }
       }
 
-      if (hitsAnything(wormPoints())) gameOver();
+      if (hitsAnything(wormSpine())) gameOver();
     }
 
     /* --- scenery --- */
@@ -708,43 +767,92 @@
     ctx.globalAlpha = 1;
   }
 
+  // Runs a smooth curve through a polyline, assuming the path is already at
+  // points[0]. Quadratic segments hung off the midpoints keep the body reading
+  // as one flowing surface rather than a chain of straight facets.
+  function smoothThrough(points) {
+    for (let i = 1; i < points.length - 1; i++) {
+      const mx = (points[i].x + points[i + 1].x) / 2;
+      const my = (points[i].y + points[i + 1].y) / 2;
+      ctx.quadraticCurveTo(points[i].x, points[i].y, mx, my);
+    }
+    const last = points[points.length - 1];
+    ctx.lineTo(last.x, last.y);
+  }
+
+  // One closed path around the whole body: down one edge, across the tail tip,
+  // back up the other edge, then a round cap over the nose.
+  function tubePath(pts) {
+    const n = pts.length;
+    const near = [];
+    const far = [];
+    for (let i = 0; i < n; i++) {
+      const p = pts[i];
+      near.push({ x: p.x + p.nx * p.r, y: p.y + p.ny * p.r });
+      far.push({ x: p.x - p.nx * p.r, y: p.y - p.ny * p.r });
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(near[0].x, near[0].y);
+    smoothThrough(near);
+    ctx.lineTo(far[n - 1].x, far[n - 1].y);
+    smoothThrough(far.slice().reverse());
+
+    const h = pts[0];
+    const ang = Math.atan2(h.ny, h.nx);
+    ctx.arc(h.x, h.y, h.r, ang + Math.PI, ang, false);
+    ctx.closePath();
+  }
+
   function drawWorm(pts) {
     const dead = state === 'over';
     const fill = dead ? COL.bodyDead : COL.body;
     const edge = dead ? COL.bodyDeadDark : COL.bodyDark;
 
-    // Outline pass first, body pass on top — the union of the circles ends up
-    // with one clean silhouette instead of a stack of overlapping strokes.
-    ctx.fillStyle = edge;
-    for (let i = pts.length - 1; i >= 0; i--) {
-      const p = pts[i];
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r + 1.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    tubePath(pts);
     ctx.fillStyle = fill;
-    for (let i = pts.length - 1; i >= 0; i--) {
-      const p = pts[i];
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    ctx.fill();
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
 
-    // Sheen along the top of the body.
-    ctx.fillStyle = dead ? 'rgba(255,255,255,0.18)' : COL.bodyLight;
-    ctx.globalAlpha = 0.55;
-    for (let i = pts.length - 1; i >= 1; i--) {
+    // Segment rings, clipped to the body so they can't spill past the outline.
+    ctx.save();
+    tubePath(pts);
+    ctx.clip();
+    ctx.strokeStyle = edge;
+    ctx.globalAlpha = 0.2;
+    ctx.lineWidth = 1.6;
+    for (let i = 2; i < pts.length - 2; i += 2) {
       const p = pts[i];
       ctx.beginPath();
-      ctx.ellipse(p.x, p.y - p.r * 0.35, p.r * 0.55, p.r * 0.3, 0, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.moveTo(p.x + p.nx * p.r, p.y + p.ny * p.r);
+      ctx.lineTo(p.x - p.nx * p.r, p.y - p.ny * p.r);
+      ctx.stroke();
     }
+    ctx.restore();
+
+    // Sheen: a slimmer tube riding the upper flank, so the highlight follows
+    // every bend of the wave instead of sitting in fixed blobs.
+    tubePath(pts.map((p) => ({
+      x: p.x - p.nx * p.r * 0.36,
+      y: p.y - p.ny * p.r * 0.36,
+      r: p.r * 0.26,
+      nx: p.nx,
+      ny: p.ny,
+    })));
+    ctx.globalAlpha = dead ? 0.16 : 0.45;
+    ctx.fillStyle = dead ? '#ffffff' : COL.bodyLight;
+    ctx.fill();
     ctx.globalAlpha = 1;
 
-    // Head details.
+    // Head details, oriented to the head's tangent so they bank with the wave.
     const h = pts[0];
-    const ex = h.x + h.r * 0.34;
-    const ey = h.y - h.r * 0.3;
+    const fx = h.ny;
+    const fy = -h.nx;
+    const ex = h.x + fx * h.r * 0.3 - h.nx * h.r * 0.36;
+    const ey = h.y + fy * h.r * 0.3 - h.ny * h.r * 0.36;
     const er = Math.max(1.8, h.r * 0.27);
 
     if (dead) {
@@ -798,7 +906,7 @@
       }
     }
 
-    drawWorm(wormPoints());
+    drawWorm(wormSpine());
     drawParticles();
   }
 
