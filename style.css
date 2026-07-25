@@ -1,0 +1,241 @@
+:root {
+  --bg: #f4ede0;
+  --panel: #fffaf1;
+  --ink: #34302a;
+  --muted: #8a8177;
+  --line: #ddd2bf;
+  --accent: #2f7a3c;
+  --pad-face: #fffaf1;
+  --pad-edge: #cdbfa8;
+  --pad-active: #e7dcc7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #191714;
+    --panel: #241f1a;
+    --ink: #f0e8da;
+    --muted: #9a9086;
+    --line: #3b332a;
+    --accent: #8fe08a;
+    --pad-face: #2c261f;
+    --pad-edge: #4a4036;
+    --pad-active: #3d352b;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.4 ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100dvh;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: max(10px, env(safe-area-inset-top)) 12px max(10px, env(safe-area-inset-bottom));
+}
+
+/* ---------- HUD ---------- */
+
+.hud {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.hud h1 {
+  margin: 0;
+  font-size: clamp(15px, 4.2vw, 22px);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.scores {
+  display: flex;
+  gap: 12px;
+  font: 600 clamp(13px, 3.6vw, 17px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+}
+
+.hi { color: var(--muted); }
+
+.score { color: var(--ink); }
+
+.score.flash { animation: flash 0.6s steps(2, end) 3; }
+
+@keyframes flash {
+  50% { opacity: 0.15; }
+}
+
+/* ---------- stage ---------- */
+
+.stage {
+  position: relative;
+  flex: 0 0 auto;
+  /* Soak up spare column height so the stage sits balanced between the header
+     and the thumb pads, rather than one of them stretching to fill it. */
+  margin-block: auto;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--panel);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (min-width: 620px) {
+  .stage { aspect-ratio: 8 / 3; }
+}
+
+#game {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px;
+  text-align: center;
+  background: rgba(247, 241, 227, 0.6);
+  color: #34302a;
+  transition: opacity 0.18s ease;
+}
+
+.overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.overlay-title {
+  margin: 0;
+  font-size: clamp(20px, 6vw, 34px);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.overlay-sub {
+  margin: 0;
+  font-size: clamp(12px, 3.4vw, 16px);
+  color: #6c635a;
+}
+
+.overlay-hint {
+  margin: 6px 0 0;
+  font-size: clamp(11px, 3.2vw, 14px);
+  font-weight: 600;
+  color: #34302a;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% { opacity: 0.4; }
+}
+
+/* ---------- touch controls ---------- */
+
+.controls {
+  display: none;
+  flex: 0 0 auto;
+  gap: 12px;
+  height: clamp(104px, 20dvh, 200px);
+}
+
+.pad {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0;
+  border: 1px solid var(--pad-edge);
+  border-bottom-width: 4px;
+  border-radius: 16px;
+  background: var(--pad-face);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pad .glyph { font-size: clamp(20px, 6vw, 26px); line-height: 1; }
+
+.pad .label {
+  font-size: clamp(11px, 3vw, 13px);
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+
+.pad.active {
+  background: var(--pad-active);
+  border-bottom-width: 1px;
+  transform: translateY(3px);
+}
+
+.legend {
+  flex: 0 0 auto;
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.legend kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--panel);
+  font: inherit;
+  font-size: 12px;
+}
+
+/* Show the pads on touch devices, hide the keyboard hint. A `touch` class is
+   also set from JS the first time a touch pointer is seen, for hybrid devices. */
+@media (hover: none) and (pointer: coarse) {
+  .controls { display: flex; }
+  .legend { display: none; }
+}
+
+body.touch .controls { display: flex; }
+body.touch .legend { display: none; }
+
+/* Very short viewports (landscape phones): drop the chrome, keep the game. */
+@media (max-height: 460px) {
+  .wrap { gap: 6px; }
+  .hud h1 { display: none; }
+  .stage { aspect-ratio: 3 / 1; }
+  .controls { height: 62px; }
+}

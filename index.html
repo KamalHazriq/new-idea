@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Worm Runner</title>
+<meta name="description" content="An endless runner: a wiggling worm hurdles baguettes and ducks under falling meteors.">
+<meta name="theme-color" content="#f7f1e3">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🪱</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="hud">
+    <h1>Worm Runner</h1>
+    <div class="scores">
+      <span class="hi" id="hiScore">HI 00000</span>
+      <span class="score" id="score">00000</span>
+    </div>
+  </header>
+
+  <div class="stage" id="stage">
+    <canvas id="game" role="img" aria-label="A worm runs across the ground, jumping baguettes and ducking under meteors."></canvas>
+    <div class="overlay" id="overlay">
+      <p class="overlay-title" id="overlayTitle">Worm Runner</p>
+      <p class="overlay-sub" id="overlaySub">Jump the baguettes. Duck the meteors.</p>
+      <p class="overlay-hint" id="overlayHint">Press Space or tap to start</p>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button class="pad" id="btnDuck" type="button" aria-label="Duck">
+      <span class="glyph">▼</span><span class="label">DUCK</span>
+    </button>
+    <button class="pad" id="btnJump" type="button" aria-label="Jump">
+      <span class="glyph">▲</span><span class="label">JUMP</span>
+    </button>
+  </div>
+
+  <p class="legend"><kbd>Space</kbd> / <kbd>↑</kbd> jump &middot; <kbd>↓</kbd> duck &middot; hold jump to go higher</p>
+
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
