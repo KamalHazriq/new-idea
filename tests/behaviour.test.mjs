@@ -331,6 +331,65 @@ const allErrors = [];
   await context.close();
 }
 
+/* ---------- a buffered tap is still a tap ---------- *
+ * Height control is a real mechanic: hold for a full jump, release early for a
+ * short hop. A buffered press must respect it. It nearly didn't — the release
+ * arrives while the worm is falling, where the cut is a no-op, so the jump that
+ * fires on landing would come out full height however briefly the key was
+ * touched. That takes height control away in exactly the moment buffering was
+ * added to help, and can throw the player higher than they asked for.
+ *
+ * Measured, not inferred: apex height after the buffered jump launches. */
+{
+  const { context, page, errors } = await openPage(browser, emptyUrl, VIEWPORTS.desktop);
+  await page.keyboard.press('Space');
+  await sleep(400);
+
+  const apexOf = (mode) => page.evaluate((m) => new Promise((resolve) => {
+    const key = (type) => window.dispatchEvent(new KeyboardEvent(type, { code: 'Space', bubbles: true }));
+    let phase = 'idle';
+    let pressAt = 0;
+    let launched = false;
+    let apex = 0;
+    const started = performance.now();
+
+    function tick(now) {
+      if (now - started > 8000) return resolve(null);
+      const d = window.__dbg;
+      const w = d.worm;
+      const standY = d.GROUND_Y - 22;
+      if (d.state !== 'running') { requestAnimationFrame(tick); return; }
+
+      if (phase === 'idle') {
+        if (w.onGround && !w.ducking && Math.abs(standY - w.y) < 1) { key('keydown'); phase = 'rising'; }
+      } else if (phase === 'rising') {
+        if (!w.onGround && w.vy > 0 && standY - w.y < 40) {
+          key('keyup');                       // let go of the opening jump
+          key('keydown');                     // buffer a new one
+          if (m === 'tap') key('keyup');      // …and immediately release it
+          pressAt = now;
+          phase = 'measure';
+        }
+      } else if (phase === 'measure') {
+        if (w.vy < 0) launched = true;        // the buffered jump has fired
+        if (launched) apex = Math.max(apex, standY - w.y);
+        if (now - pressAt > 900) { if (m !== 'tap') key('keyup'); return resolve(apex); }
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }), mode);
+
+  const tapApex = await apexOf('tap');
+  const holdApex = await apexOf('hold');
+
+  report.check('a buffered tap stays a short hop, a buffered hold goes full height',
+    tapApex !== null && holdApex !== null && tapApex < 50 && holdApex > 90,
+    `tap apex ${tapApex === null ? 'n/a' : tapApex.toFixed(1)}, hold apex ${holdApex === null ? 'n/a' : holdApex.toFixed(1)}`);
+  allErrors.push(...errors);
+  await context.close();
+}
+
 report.check('no console or page errors', allErrors.length === 0, allErrors.slice(0, 2).join(' | '));
 
 await browser.close();

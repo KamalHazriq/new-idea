@@ -172,6 +172,8 @@
   const stars = [];
 
   let jumpBuffer = 0;            // seconds a pressed-early jump stays live
+  let jumpHeld = false;          // needed at landing: a buffered tap must still
+                                 // short-hop, and its release already happened
   let hintUntil = 0;             // when the "DUCK" prompt stops showing
   let hintObstacle = null;
   let newBest = false;
@@ -360,6 +362,7 @@
     flash = 0;
     culprit = null;
     jumpBuffer = 0;
+    jumpHeld = false;
     hintObstacle = null;
     hintUntil = 0;
     newBest = false;
@@ -804,7 +807,15 @@
           // get down early" is exactly how a good player would react.
           if (jumpBuffer > 0) {
             jumpBuffer = 0;
-            if (!worm.ducking) doJump();
+            if (!worm.ducking) {
+              doJump();
+              // A buffered *tap* must still be a short hop. Its release arrived
+              // while the worm was falling, where the cut is a no-op, so apply
+              // it here — otherwise buffering quietly upgrades every tap to a
+              // full-height jump and takes the height control away exactly when
+              // the player was relying on it.
+              if (!jumpHeld) worm.vy *= JUMP_CUT;
+            }
           }
         }
       } else {
@@ -1312,11 +1323,13 @@
       if (performance.now() - overAt > 500) reset(true);
       return;
     }
+    jumpHeld = true;
     if (worm.onGround) doJump();
     else jumpBuffer = JUMP_BUFFER;   // held, and spent on landing
   }
 
   function releaseJump() {
+    jumpHeld = false;
     if (state === 'running' && !worm.onGround && worm.vy < 0) worm.vy *= JUMP_CUT;
   }
 
