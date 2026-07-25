@@ -1,0 +1,15 @@
+{
+  "name": "worm-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An endless runner: a wiggling worm hurdles baguettes and ducks under meteor showers.",
+  "type": "module",
+  "scripts": {
+    "start": "npx --yes http-server . -p 8000 -c-1",
+    "test": "node tests/run.mjs",
+    "test:long": "LONG_RUN=1 node tests/run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
+  }
+}

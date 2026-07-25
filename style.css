@@ -67,6 +67,25 @@ body {
   letter-spacing: 0.02em;
 }
 
+.skin {
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.swatch {
+  display: block;
+  width: clamp(15px, 4vw, 19px);
+  aspect-ratio: 1;
+  border: 2px solid var(--line);
+  border-radius: 50%;
+  background: #5fbf5f;
+}
+
 .mute {
   padding: 0 2px;
   border: 0;
