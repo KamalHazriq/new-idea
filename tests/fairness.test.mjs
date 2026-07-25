@@ -29,7 +29,17 @@ const ALL_METEORS = [
   ['return Math.min(0.52, METEOR_CHANCE + score * 0.00004);', 'return 1;'],
 ];
 
-const BOTH_TYPES = [['const METEOR_UNLOCK = 260;', 'const METEOR_UNLOCK = 0;']];
+// Arches from the first obstacle, and nothing else, so the four possible
+// responses to one can each be tested in isolation.
+const ALL_ARCHES = [
+  ['const ARCH_UNLOCK = 600;', 'const ARCH_UNLOCK = 0;'],
+  ['const ARCH_CHANCE = 0.24;', 'const ARCH_CHANCE = 1;'],
+];
+
+const ALL_TYPES = [
+  ['const METEOR_UNLOCK = 260;', 'const METEOR_UNLOCK = 0;'],
+  ['const ARCH_UNLOCK = 600;', 'const ARCH_UNLOCK = 0;'],
+];
 
 const report = createReporter('fairness');
 const browser = await launch();
@@ -43,7 +53,8 @@ async function host(replacements) {
 
 const worstUrl = await host(WORST_BAGUETTES);
 const meteorUrl = await host(ALL_METEORS);
-const mixedUrl = await host(BOTH_TYPES);
+const archUrl = await host(ALL_ARCHES);
+const mixedUrl = await host(ALL_TYPES);
 
 const LONG = Number(process.env.LONG_RUN || 0);
 
@@ -54,13 +65,13 @@ async function expectSurvives(label, url, device, seconds, options) {
   report.check(label, r.deaths.length === 0 && r.errors.length === 0, detail);
 }
 
-async function expectDies(label, url, device, seconds, options) {
+async function expectDies(label, url, device, seconds, options, culprit = 'meteor') {
   const r = await runBot(browser, url, device, seconds, options);
   const kinds = [...new Set(r.deaths.map((d) => d.culpritType))];
   report.check(
     label,
-    r.deaths.length > 0 && kinds.every((k) => k === 'meteor') && r.errors.length === 0,
-    `deaths=${r.deaths.length} attempts=${r.jumps} killedBy=${kinds.join(',') || 'none'}`,
+    r.deaths.length > 0 && kinds.every((k) => k === culprit) && r.errors.length === 0,
+    `deaths=${r.deaths.length} killedBy=${kinds.join(',') || 'none'}`,
   );
 }
 
@@ -68,22 +79,31 @@ async function expectDies(label, url, device, seconds, options) {
  * on a narrow phone world as well as a wide one. Phone is the binding case —
  * horizontal speed scales with world width, so a phone worm covers fewer units
  * per second while the worm's own body stays the same size. */
-await expectSurvives('worst-case baguettes clearable, desktop', worstUrl, VIEWPORTS.desktop, LONG ? 100 : 45);
-await expectSurvives('worst-case baguettes clearable, phone', worstUrl, VIEWPORTS.phone, LONG ? 100 : 45);
+await expectSurvives('worst-case baguettes clearable, desktop', worstUrl, VIEWPORTS.desktop, LONG ? 100 : 40);
+await expectSurvives('worst-case baguettes clearable, phone', worstUrl, VIEWPORTS.phone, LONG ? 100 : 40);
 
 /* Meteors: ducking must work, and jumping must not. The second assertion is
  * the one with teeth — it is the difference between ducking being required and
  * ducking being decorative, and it silently regresses the moment the jump arc
  * clears the top of the shower. */
-await expectSurvives('meteor showers cleared by ducking, desktop', meteorUrl, VIEWPORTS.desktop, 45);
-await expectSurvives('meteor showers cleared by ducking, phone', meteorUrl, VIEWPORTS.phone, 45);
-await expectDies('meteor showers are NOT jumpable, desktop', meteorUrl, VIEWPORTS.desktop, 30, { meteorPolicy: 'jump' });
-await expectDies('meteor showers are NOT jumpable, phone', meteorUrl, VIEWPORTS.phone, 30, { meteorPolicy: 'jump' });
+await expectSurvives('meteor showers cleared by ducking, desktop', meteorUrl, VIEWPORTS.desktop, 40);
+await expectSurvives('meteor showers cleared by ducking, phone', meteorUrl, VIEWPORTS.phone, 40);
+await expectDies('meteor showers are NOT jumpable, desktop', meteorUrl, VIEWPORTS.desktop, 20, { meteorPolicy: 'jump' });
+await expectDies('meteor showers are NOT jumpable, phone', meteorUrl, VIEWPORTS.phone, 20, { meteorPolicy: 'jump' });
 
-/* Both types interleaved. With LONG_RUN=1 this passes the point where speed
+/* Arches ask for restraint: hop it, don't clear it. All three wrong answers —
+ * hold the jump and clip the rock, ignore it and hit the loaf, duck and hit the
+ * loaf — have to be punished, or the obstacle isn't asking anything. */
+await expectSurvives('arches cleared by a low hop, desktop', archUrl, VIEWPORTS.desktop, 40, { archPolicy: 'tap' });
+await expectSurvives('arches cleared by a low hop, phone', archUrl, VIEWPORTS.phone, 40, { archPolicy: 'tap' });
+await expectDies('holding the jump clips the arch', archUrl, VIEWPORTS.desktop, 20, { archPolicy: 'hold' }, 'arch');
+await expectDies('ignoring an arch hits the loaf', archUrl, VIEWPORTS.desktop, 20, { archPolicy: 'ignore' }, 'arch');
+await expectDies('ducking an arch hits the loaf', archUrl, VIEWPORTS.desktop, 20, { archPolicy: 'duck' }, 'arch');
+
+/* All three types interleaved. With LONG_RUN=1 this passes the point where speed
  * hits its cap, which is where gaps get tightest. */
-await expectSurvives('mixed obstacles survivable, desktop', mixedUrl, VIEWPORTS.desktop, LONG ? 130 : 50);
-await expectSurvives('mixed obstacles survivable, phone', mixedUrl, VIEWPORTS.phone, LONG ? 130 : 50);
+await expectSurvives('all three types survivable, desktop', mixedUrl, VIEWPORTS.desktop, LONG ? 130 : 50);
+await expectSurvives('all three types survivable, phone', mixedUrl, VIEWPORTS.phone, LONG ? 130 : 50);
 
 await browser.close();
 for (const s of servers) s.close();

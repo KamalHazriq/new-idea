@@ -3,7 +3,7 @@
 An endless runner in the spirit of the Chrome dino game — except you're a worm,
 the cacti are baguettes, and the bird is a meteor shower.
 
-**Jump the baguettes. Duck the meteors.**
+**Jump the baguettes. Duck the meteors. Hop the arches — don't clear them.**
 
 ## Controls
 
@@ -12,6 +12,7 @@ the cacti are baguettes, and the bird is a meteor shower.
 | Jump | `Space` / `↑` / `W` | **JUMP** pad |
 | Duck | `↓` / `S` | **DUCK** pad |
 | Start / restart | `Space` / `Enter` / `R` | tap anywhere |
+| Pause | `P` / `Esc` | ⏸ button |
 
 Holding jump goes higher; releasing early cuts the arc short. Ducking in mid-air
 drops you fast. A jump pressed just before you land still counts — it's held
@@ -39,21 +40,27 @@ and no dependencies.
 
 Difficulty scales the way the original does: speed ramps up over time, obstacle
 gaps are measured in *time to arrive* rather than fixed distance so fast play
-stays fair, and meteors only start showing up past 260 points. Speed hits a
-ceiling around 90 seconds, so two things keep going after it: meteors grow
-steadily more frequent, and the sky cycles day → dusk → night → dawn every 700
-points, cross-fading over the tail of each phase. Only the scenery shifts —
-worm, baguettes and meteors keep fixed colours so the things you have to read
+stays fair, and new obstacles unlock as you go: meteor showers past 260
+points, arches past 600. Speed hits a ceiling around 90 seconds, so two things
+keep going after it: meteors grow steadily more frequent, and the sky cycles
+day → dusk → night → dawn every 700 points, cross-fading over the tail of each phase. Only the scenery shifts —
+the worm and the obstacles keep fixed colours so the things you have to read
 stay equally legible at midnight.
 
-Two rules keep both obstacles honest, and both fall out of the jump arc rather
-than being hand-tuned:
+Three rules keep the obstacles honest, and all three fall out of the jump arc
+rather than being hand-tuned — each obstacle asks for something the others
+don't, and none of them can be answered the wrong way:
 
 - **Baguette clusters can always be cleared.** `clearableSpan()` solves the arc
   for the two moments it crosses the top of the tallest loaf, subtracts the lag
   before the rearmost collision probe gets up there, and turns the remainder
   into world distance. Spawning stops adding loaves at that limit, so a group
   is either tall and narrow or wide and low — never an impossible wall.
+- **Arches can't be cleared, only hopped.** A low loaf under a hanging rock:
+  ignore it and you hit the loaf, duck and you still hit the loaf, hold the jump
+  and you clip the rock. The only way through is a deliberately short hop. This
+  exists because the game already had a variable-height jump — hold higher,
+  release to cut — with nothing that ever required using it.
 - **Meteors can never be jumped.** Because the jump must clear a 62-unit
   baguette, its apex is far above any single low-flying rock — so one rock could
   always just be jumped over, and ducking would be decoration. Meteors therefore
@@ -61,6 +68,11 @@ than being hand-tuned:
   leaving exactly one way through: flat on the ground. Each rock's dive covers
   the same horizontal run whatever its height, so they streak in staggered, all
   level off together, and the warning is identical at any speed.
+
+The rock in an arch hangs higher than the bare minimum on purpose: the smallest
+possible hop is airborne for only 0.31 s, and on a narrow phone world — where
+horizontal speed is halved but the worm's own footprint isn't — that barely
+spans the loaf. Room for a taller hop is what makes it fair on a phone.
 
 Dying holds the frame for a moment, freezes the worm in the pose that got it
 killed, and outlines the culprit — with only the front of the worm lethal,
@@ -81,11 +93,14 @@ Opening `index.html` directly works too.
 
 ```sh
 npm install && npx playwright install chromium
-npm test
+npm test          # ~9 minutes
 ```
 
+CI runs this on every push and pull request
+([`.github/workflows/test.yml`](.github/workflows/test.yml)).
+
 The suites drive the real game in a real browser through real key events. They
-exist because the two rules above are *derived* from the jump arc, so touching
+exist because the three rules above are *derived* from the jump arc, so touching
 `JUMP_V`, `GRAVITY`, `HIT_PROBES`, `METEOR_ROCKS` or any baguette dimension
 silently changes what the obstacles are allowed to be — and an unfair cluster or
 a jumpable shower looks completely normal until it shows up. See
