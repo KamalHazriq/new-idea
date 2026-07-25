@@ -641,14 +641,21 @@
     }
 
     traveled += ws * dt;
-    // Wriggle faster as the worm speeds up, so the gait stays believable.
-    worm.wave += dt * (5 + ws * 0.022);
 
-    /* --- worm --- */
-    const wantDuck = worm.ducking && worm.onGround && state === 'running';
-    worm.duckT += ((wantDuck ? 1 : 0) - worm.duckT) * Math.min(1, dt * 16);
-
+    /* --- worm --- *
+     * Frozen outright once the run is over. The death pose IS the feedback, so
+     * it has to hold: left running, duckT lerps back toward standing and a worm
+     * killed while flat visibly inflates to full height under the hitstop —
+     * exactly the frame the player is trying to read. Freezing here also stops
+     * pushTrail() appending at a standstill, which grew the buffer without
+     * bound because the trim cutoff stops moving too. */
     if (state !== 'over') {
+      // Wriggle faster as the worm speeds up, so the gait stays believable.
+      worm.wave += dt * (5 + ws * 0.022);
+
+      const wantDuck = worm.ducking && worm.onGround && state === 'running';
+      worm.duckT += ((wantDuck ? 1 : 0) - worm.duckT) * Math.min(1, dt * 16);
+
       if (!worm.onGround) {
         worm.vy += GRAVITY * dt;
         if (worm.ducking) worm.vy += GRAVITY * (FAST_FALL - 1) * dt;
@@ -663,11 +670,12 @@
       } else {
         worm.y += (restY() - worm.y) * Math.min(1, dt * 18);
       }
+
+      pushTrail();
+      // Computed once here and reused by both the collision test and the
+      // renderer — it used to be built twice per frame from the same inputs.
+      spine = wormSpine();
     }
-    pushTrail();
-    // Computed once here and reused by both the collision test and the
-    // renderer — it used to be built twice per frame from the same inputs.
-    spine = wormSpine();
 
     /* --- death feedback --- */
     if (hitstop > 0) {
