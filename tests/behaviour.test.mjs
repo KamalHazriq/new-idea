@@ -24,6 +24,9 @@ const plainUrl = await host();
 // Baguettes only, so the worm can be killed while ducked: a flattened worm
 // still collides with a loaf, which is the pose the freeze test needs.
 const bagUrl = await host([['return Math.min(0.52, METEOR_CHANCE + score * 0.00004);', 'return 0;']]);
+// An empty world, so jump mechanics can be measured without an obstacle ever
+// interrupting or killing the worm mid-trial.
+const emptyUrl = await host([['if (spawnGap <= 0) spawnObstacle();', 'if (spawnGap <= 0) spawnGap = 1e9;']]);
 
 const allErrors = [];
 
@@ -134,6 +137,77 @@ const allErrors = [];
     const live = await page.evaluate(() => ({ ...window.__dbg }));
     report.check('restart resumes animation', live.state === 'running' && live.wave !== after.wave);
   }
+  allErrors.push(...errors);
+  await context.close();
+}
+
+/* ---------- a jump pressed just before landing must still fire ---------- *
+ * Timed from inside the page: the window under test is ~130 ms and driving it
+ * from Node would be far too coarse.
+ *
+ * Press height is swept deliberately. A press made just before touchdown leaves
+ * most of the buffer intact and survives almost any implementation — so testing
+ * only that proves nothing. The interesting presses are the early ones, where
+ * the buffer has a few milliseconds left on the landing frame: less than one
+ * frame's dt, so an implementation that ages the buffer before spending it
+ * drops exactly those. Heights up to ~66 units correspond to ~120 ms of fall,
+ * which lands in that band; beyond that the press is genuinely too early and is
+ * *supposed* to expire.
+ *
+ * The signal is indirect but unambiguous: a buffer that fires does so on the
+ * same frame as the landing, so the worm goes straight back up and is never
+ * seen on the ground. A dropped buffer leaves it sitting there. */
+{
+  const { context, page, errors } = await openPage(browser, emptyUrl, VIEWPORTS.desktop);
+  await page.keyboard.press('Space');
+  await sleep(400);
+
+  const trials = await page.evaluate(() => new Promise((resolve) => {
+    const HEIGHTS = [16, 34, 50, 60, 66, 66, 62, 58];   // units above standing rest
+    const results = [];
+    const key = (type) => window.dispatchEvent(new KeyboardEvent(type, { code: 'Space', bubbles: true }));
+    let phase = 'idle';
+    let pressAt = 0;
+    let pressHeight = 0;
+    const started = performance.now();
+
+    function tick(now) {
+      if (now - started > 20000) return resolve(results);   // never hang the suite
+      const d = window.__dbg;
+      const w = d.worm;
+      const standY = d.GROUND_Y - 22;
+
+      if (d.state !== 'running') { requestAnimationFrame(tick); return; }
+
+      if (phase === 'idle') {
+        if (w.onGround) { key('keydown'); key('keyup'); phase = 'rising'; }
+      } else if (phase === 'rising') {
+        if (!w.onGround && w.vy > 0 && standY - w.y < HEIGHTS[results.length]) {
+          pressHeight = standY - w.y;
+          key('keydown');
+          key('keyup');
+          pressAt = now;
+          phase = 'watch';
+        }
+      } else if (phase === 'watch') {
+        if (now - pressAt > 260) {
+          results.push({ height: +pressHeight.toFixed(1), airborne: !w.onGround });
+          phase = results.length < HEIGHTS.length ? 'settle' : 'done';
+        }
+      } else if (phase === 'settle') {
+        if (w.onGround) phase = 'idle';
+      }
+
+      if (phase === 'done') return resolve(results);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }));
+
+  const fired = trials.filter((t) => t.airborne).length;
+  report.check('early jump press survives until landing',
+    trials.length >= 6 && fired === trials.length,
+    `${fired}/${trials.length} fired, from heights ${trials.map((t) => t.height).join(', ')}`);
   allErrors.push(...errors);
   await context.close();
 }

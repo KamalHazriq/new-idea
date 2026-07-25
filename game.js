@@ -785,8 +785,6 @@
       const wantDuck = worm.ducking && worm.onGround && state === 'running';
       worm.duckT += ((wantDuck ? 1 : 0) - worm.duckT) * Math.min(1, dt * 16);
 
-      if (jumpBuffer > 0) jumpBuffer -= dt;
-
       if (!worm.onGround) {
         worm.vy += GRAVITY * dt;
         if (worm.ducking) worm.vy += GRAVITY * (FAST_FALL - 1) * dt;
@@ -804,6 +802,11 @@
       } else {
         worm.y += (restY() - worm.y) * Math.min(1, dt * 18);
       }
+
+      // Expire the buffer only after this frame's landing has had its chance to
+      // spend it. Ageing it first can zero a still-valid press on the exact
+      // frame it was waiting for, which is the one thing this must not do.
+      if (jumpBuffer > 0) jumpBuffer = Math.max(0, jumpBuffer - dt);
 
       pushTrail();
       // Computed once here and reused by both the collision test and the
