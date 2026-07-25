@@ -25,12 +25,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # Pages must already be enabled on the repo (Settings → Pages → Source →
+      # GitHub Actions). It cannot be switched on from here: creating the Pages
+      # site needs repo-admin rights, and GITHUB_TOKEN has no such scope.
       - name: Configure Pages
         uses: actions/configure-pages@v5
-        # Turns Pages on via the API the first time this runs, so the repo
-        # doesn't need the Settings → Pages → Source toggle flipped by hand.
-        with:
-          enablement: true
 
       - name: Assemble site
         run: |

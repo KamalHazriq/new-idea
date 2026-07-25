@@ -72,15 +72,43 @@
   const SCORE_RATE = 0.06;
   const HI_KEY = 'wormrunner.hi';
   const MUTE_KEY = 'wormrunner.muted';
+  const SKIN_KEY = 'wormrunner.skin';
+  const DUCKED_KEY = 'wormrunner.ducked';   // has the player ever cleared a shower
+
+  const JUMP_BUFFER = 0.13;      // a jump pressed this soon before landing still counts
+
+  // Worm colours. `rainbow` is painted as a hue sweep down the body instead of
+  // flat fills, so it needs no colours of its own.
+  const SKINS = [
+    { name: 'Green',   body: '#5fbf5f', dark: '#2f7a3c', light: '#95e48f' },
+    { name: 'Rainbow', rainbow: true,   swatch: 'conic-gradient(#e5484d,#f5a524,#f3e04a,#46a758,#3b9eff,#8e4ec6,#e5484d)' },
+    { name: 'Coral',   body: '#f4795b', dark: '#a83b26', light: '#ffb59e' },
+    { name: 'Ocean',   body: '#4aa8d8', dark: '#1f5f85', light: '#9adcf5' },
+    { name: 'Grape',   body: '#9b6bd6', dark: '#5b2f8f', light: '#cbaaf0' },
+    { name: 'Gold',    body: '#e8b53c', dark: '#9a6c12', light: '#f7dc93' },
+  ];
 
   const HITSTOP = 0.16;          // seconds the impact frame is held
   const SHAKE_MAX = 7;
 
+  // The environment cycles day → dusk → night → dawn and back, one phase per
+  // PHASE_LEN points, blended over the tail of each phase. Only the scenery
+  // shifts; the worm, baguettes and meteors keep fixed colours so the things
+  // you have to read stay equally legible at every hour.
+  const PHASE_LEN = 700;
+  const PHASES = [
+    { sky0: [220, 239, 251], sky1: [253, 244, 226], ground: [125, 108, 86],
+      groundDark: [94, 80, 64], pebble: [156, 138, 113], cloud: [255, 255, 255], cloudA: 0.9, stars: 0 },
+    { sky0: [246, 168, 128], sky1: [255, 226, 184], ground: [112, 88, 74],
+      groundDark: [80, 62, 52], pebble: [152, 124, 104], cloud: [255, 226, 204], cloudA: 0.85, stars: 0.2 },
+    { sky0: [24, 32, 64], sky1: [72, 66, 104], ground: [50, 47, 62],
+      groundDark: [33, 30, 42], pebble: [96, 92, 116], cloud: [118, 126, 166], cloudA: 0.45, stars: 1 },
+    { sky0: [150, 170, 220], sky1: [255, 214, 190], ground: [100, 90, 84],
+      groundDark: [70, 62, 58], pebble: [140, 128, 116], cloud: [255, 240, 230], cloudA: 0.8, stars: 0.3 },
+  ];
+
   const COL = {
-    sky0: '#dceffb', sky1: '#fdf4e2',
-    cloud: 'rgba(255, 255, 255, 0.9)',
-    ground: '#7d6c56', groundDark: '#5e5040', pebble: '#9c8a71',
-    body: '#5fbf5f', bodyDark: '#2f7a3c', bodyLight: '#95e48f',
+    // Live body colours come from SKINS; these are the corpse.
     bodyDead: '#9aa08f', bodyDeadDark: '#6b7062',
     crust: '#e2b273', crustDark: '#a9743a', crumb: '#f8dfb2',
     rock: '#6d665f', rockDark: '#423d38', rockLight: '#9a9189',
@@ -103,6 +131,8 @@
   const btnJump = document.getElementById('btnJump');
   const btnDuck = document.getElementById('btnDuck');
   const btnMute = document.getElementById('btnMute');
+  const btnSkin = document.getElementById('btnSkin');
+  const swatch = document.getElementById('swatch');
 
   /* ------------------------------------------------------------------ *
    * State
@@ -139,6 +169,35 @@
   const particles = [];
   const clouds = [];
   const pebbles = [];
+  const stars = [];
+
+  let jumpBuffer = 0;            // seconds a pressed-early jump stays live
+  let hintUntil = 0;             // when the "DUCK" prompt stops showing
+  let hintObstacle = null;
+  let newBest = false;
+
+  // Motion can be genuinely unpleasant for some people, and this page is all
+  // motion. Honouring the preference drops shake, particles and parallax while
+  // leaving the game completely playable.
+  const reducedMotionQuery = window.matchMedia
+    ? matchMedia('(prefers-reduced-motion: reduce)')
+    : null;
+  let reducedMotion = reducedMotionQuery ? reducedMotionQuery.matches : false;
+  if (reducedMotionQuery) {
+    const onChange = (e) => { reducedMotion = e.matches; };
+    if (reducedMotionQuery.addEventListener) reducedMotionQuery.addEventListener('change', onChange);
+    else if (reducedMotionQuery.addListener) reducedMotionQuery.addListener(onChange);
+  }
+
+  let skinIndex = (() => {
+    try {
+      const n = parseInt(localStorage.getItem(SKIN_KEY), 10);
+      return Number.isInteger(n) && n >= 0 && n < SKINS.length ? n : 0;
+    } catch { return 0; }
+  })();
+  let hasDucked = (() => {
+    try { return localStorage.getItem(DUCKED_KEY) === '1'; } catch { return false; }
+  })();
 
   const MAX_LOOKBACK = SEGMENTS * SEG_SPACING * 1.6;
 
@@ -151,6 +210,45 @@
   }
 
   function pad5(n) { return String(Math.floor(n)).padStart(5, '0'); }
+
+  /* ------------------------------------------------------------------ *
+   * Palette — the current point in the day/night cycle
+   * ------------------------------------------------------------------ */
+
+  const pal = { sky0: '', sky1: '', ground: '', groundDark: '', pebble: '', cloud: '', stars: 0 };
+  let palKey = '';               // guards rebuilding the sky gradient every frame
+
+  const rgb = (c) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+  const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+  function updatePalette() {
+    const pos = score / PHASE_LEN;
+    const i = Math.floor(pos) % PHASES.length;
+    const j = (i + 1) % PHASES.length;
+    const f = pos - Math.floor(pos);
+    // Hold the phase, then cross-fade over its last 20% so the change is felt
+    // as a passage of time rather than a jump cut.
+    const t = f < 0.8 ? 0 : (f - 0.8) / 0.2;
+
+    const a = PHASES[i];
+    const b = PHASES[j];
+    pal.sky0 = rgb(mix(a.sky0, b.sky0, t));
+    pal.sky1 = rgb(mix(a.sky1, b.sky1, t));
+    pal.ground = rgb(mix(a.ground, b.ground, t));
+    pal.groundDark = rgb(mix(a.groundDark, b.groundDark, t));
+    pal.pebble = rgb(mix(a.pebble, b.pebble, t));
+    const c = mix(a.cloud, b.cloud, t);
+    pal.cloud = `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${(a.cloudA + (b.cloudA - a.cloudA) * t).toFixed(3)})`;
+    pal.stars = a.stars + (b.stars - a.stars) * t;
+
+    const key = pal.sky0 + pal.sky1;
+    if (key !== palKey) {
+      palKey = key;
+      skyGrad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+      skyGrad.addColorStop(0, pal.sky0);
+      skyGrad.addColorStop(1, pal.sky1);
+    }
+  }
 
   /* ------------------------------------------------------------------ *
    * Sound — tiny synthesised blips, no asset files
@@ -234,10 +332,8 @@
     // Leave room for the whole body behind the head without crowding the road.
     headX = Math.min(210, Math.max(SEGMENTS * SEG_SPACING + 12, worldW * 0.24));
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-
-    skyGrad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
-    skyGrad.addColorStop(0, COL.sky0);
-    skyGrad.addColorStop(1, COL.sky1);
+    palKey = '';                 // gradient is tied to the transform; rebuild it
+    updatePalette();
 
     if (Math.abs(worldW - prevW) > 1) buildScenery();
   }
@@ -263,6 +359,10 @@
     shake = 0;
     flash = 0;
     culprit = null;
+    jumpBuffer = 0;
+    hintObstacle = null;
+    hintUntil = 0;
+    newBest = false;
 
     worm.y = standY();
     worm.vy = 0;
@@ -301,6 +401,15 @@
         len: 3 + Math.random() * 12,
       });
     }
+    stars.length = 0;
+    for (let i = 0; i < 40; i++) {
+      stars.push({
+        x: Math.random() * worldW,
+        y: 6 + Math.random() * (GROUND_Y * 0.72),
+        r: 0.6 + Math.random() * 1.2,
+        tw: Math.random() * Math.PI * 2,
+      });
+    }
   }
 
   function start() {
@@ -315,11 +424,12 @@
     worm.ducking = false;
     culprit = hit;
     hitstop = HITSTOP;
-    shake = SHAKE_MAX;
+    shake = reducedMotion ? 0 : SHAKE_MAX;
     flash = 1;
-    burst(headX, worm.y, 16, COL.bodyDark);
+    burst(headX, worm.y, 16, SKINS[skinIndex].dark || '#2f7a3c');
     sfx.die();
-    if (Math.floor(score) > hiScore) {
+    newBest = Math.floor(score) > hiScore && Math.floor(score) > 0;
+    if (newBest) {
       hiScore = Math.floor(score);
       writeHi(hiScore);
     }
@@ -339,8 +449,10 @@
       overlaySub.textContent = 'Jump the baguettes. Duck the meteors.';
       overlayHint.textContent = 'Press Space or tap to start';
     } else {
-      overlayTitle.textContent = 'GAME OVER';
-      overlaySub.textContent = `Score ${pad5(score)}  ·  Best ${pad5(hiScore)}`;
+      overlayTitle.textContent = newBest ? 'NEW BEST!' : 'GAME OVER';
+      overlaySub.textContent = newBest
+        ? `${pad5(score)}  ·  your best yet`
+        : `Score ${pad5(score)}  ·  Best ${pad5(hiScore)}`;
       overlayHint.textContent = 'Press Space or tap to run again';
     }
   }
@@ -421,8 +533,14 @@
    * Obstacles
    * ------------------------------------------------------------------ */
 
+  // Meteors get steadily more common as the run goes on, so the mix keeps
+  // shifting after speed has hit its ceiling.
+  function meteorChance() {
+    return Math.min(0.52, METEOR_CHANCE + score * 0.00004);
+  }
+
   function spawnObstacle() {
-    if (score >= METEOR_UNLOCK && Math.random() < METEOR_CHANCE) spawnMeteor();
+    if (score >= METEOR_UNLOCK && Math.random() < meteorChance()) spawnMeteor();
     else spawnBaguettes();
 
     // Gap measured in time-to-arrive, so high speeds stay fair.
@@ -510,7 +628,15 @@
       });
     }
 
-    obstacles.push({ type: 'meteor', x: worldW + 30, vxMag, rocks });
+    const shower = { type: 'meteor', x: worldW + 30, vxMag, rocks };
+    obstacles.push(shower);
+
+    // Nothing in the game teaches that a shower has to be gone under rather
+    // than over. Prompt on the first one, until the player has cleared one.
+    if (!hasDucked && !hintObstacle) {
+      hintObstacle = shower;
+      hintUntil = performance.now() + 2600;
+    }
   }
 
   /* ------------------------------------------------------------------ *
@@ -518,6 +644,7 @@
    * ------------------------------------------------------------------ */
 
   function burst(x, y, n, color) {
+    if (reducedMotion) return;
     for (let i = 0; i < n && particles.length < 140; i++) {
       const a = Math.random() * Math.PI * 2;
       const sp = 40 + Math.random() * 190;
@@ -536,6 +663,7 @@
   }
 
   function dust(x, y, n) {
+    if (reducedMotion) return;
     for (let i = 0; i < n && particles.length < 140; i++) {
       particles.push({
         x: x + (Math.random() - 0.5) * 14,
@@ -545,7 +673,7 @@
         r: 1.5 + Math.random() * 2.5,
         life: 0.25 + Math.random() * 0.3,
         max: 0.55,
-        color: COL.pebble,
+        color: pal.pebble,
         grav: 700,
         drift: true,
       });
@@ -553,7 +681,7 @@
   }
 
   function spark(x, y) {
-    if (particles.length > 130) return;
+    if (reducedMotion || particles.length > 130) return;
     particles.push({
       x, y,
       vx: 30 + Math.random() * 60,
@@ -640,6 +768,7 @@
       updateHud();
     }
 
+    updatePalette();
     traveled += ws * dt;
 
     /* --- worm --- *
@@ -656,6 +785,8 @@
       const wantDuck = worm.ducking && worm.onGround && state === 'running';
       worm.duckT += ((wantDuck ? 1 : 0) - worm.duckT) * Math.min(1, dt * 16);
 
+      if (jumpBuffer > 0) jumpBuffer -= dt;
+
       if (!worm.onGround) {
         worm.vy += GRAVITY * dt;
         if (worm.ducking) worm.vy += GRAVITY * (FAST_FALL - 1) * dt;
@@ -666,6 +797,9 @@
           worm.onGround = true;
           dust(headX - 6, GROUND_Y, 7);
           sfx.land();
+          // A jump pressed just before touchdown used to be swallowed; now it
+          // fires the instant the worm lands.
+          if (jumpBuffer > 0) { jumpBuffer = 0; doJump(); }
         }
       } else {
         worm.y += (restY() - worm.y) * Math.min(1, dt * 18);
@@ -709,6 +843,13 @@
             const rock = o.rocks[(Math.random() * o.rocks.length) | 0];
             spark(o.x + rock.r * 0.8, rock.y - rock.r * 0.3);
           }
+          // Still running once a shower is behind you means you went under it —
+          // there is no other way past. Stop prompting after the first one.
+          if (o.x < headX - 50 && !hasDucked) {
+            hasDucked = true;
+            hintObstacle = null;
+            try { localStorage.setItem(DUCKED_KEY, '1'); } catch { /* private mode */ }
+          }
           if (o.x < -60) obstacles.splice(i, 1);
         }
       }
@@ -718,8 +859,14 @@
     }
 
     /* --- scenery --- */
+    const parallax = reducedMotion ? 0 : 1;
+    for (const s of stars) {
+      s.x -= ws * 0.06 * parallax * dt;
+      s.tw += dt * 2.2;
+      if (s.x < -4) { s.x = worldW + Math.random() * 40; s.y = 6 + Math.random() * (GROUND_Y * 0.72); }
+    }
     for (const c of clouds) {
-      c.x -= ws * 0.22 * dt;
+      c.x -= ws * 0.22 * parallax * dt;
       if (c.x < -90) {
         c.x = worldW + 40 + Math.random() * 160;
         c.y = 18 + Math.random() * (GROUND_Y * 0.45);
@@ -766,10 +913,21 @@
   }
 
   function drawBackground() {
-    ctx.fillStyle = skyGrad || COL.sky1;
+    ctx.fillStyle = skyGrad || pal.sky1;
     ctx.fillRect(0, 0, worldW, WORLD_H);
 
-    ctx.fillStyle = COL.cloud;
+    if (pal.stars > 0.02) {
+      ctx.fillStyle = '#ffffff';
+      for (const s of stars) {
+        ctx.globalAlpha = pal.stars * (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(s.tw)));
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.fillStyle = pal.cloud;
     for (const c of clouds) {
       const r = 9 * c.s;
       ctx.beginPath();
@@ -782,13 +940,13 @@
 
   function drawGround() {
     // Overdrawn past every edge so a shake offset never reveals bare canvas.
-    ctx.fillStyle = COL.ground;
+    ctx.fillStyle = pal.ground;
     ctx.fillRect(-12, GROUND_Y, worldW + 24, WORLD_H - GROUND_Y + 14);
 
-    ctx.fillStyle = COL.groundDark;
+    ctx.fillStyle = pal.groundDark;
     ctx.fillRect(-12, GROUND_Y, worldW + 24, 2.5);
 
-    ctx.strokeStyle = COL.pebble;
+    ctx.strokeStyle = pal.pebble;
     ctx.lineWidth = 1.6;
     ctx.lineCap = 'round';
     ctx.beginPath();
@@ -941,10 +1099,28 @@
     ctx.closePath();
   }
 
+  // A hue sweep running head-to-tail along the spine, drifting over time. Built
+  // per frame because both endpoints move with the body.
+  function rainbowGradient(pts, light, alpha) {
+    const head = pts[0];
+    const tail = pts[pts.length - 1];
+    const g = ctx.createLinearGradient(head.x, head.y, tail.x, tail.y);
+    const shift = (worm.wave * 24) % 360;
+    for (let i = 0; i <= 6; i++) {
+      const hue = (shift + i * 60) % 360;
+      g.addColorStop(i / 6, `hsla(${hue}, 82%, ${light}%, ${alpha})`);
+    }
+    return g;
+  }
+
   function drawWorm(pts) {
     const dead = state === 'over';
-    const fill = dead ? COL.bodyDead : COL.body;
-    const edge = dead ? COL.bodyDeadDark : COL.bodyDark;
+    const skin = SKINS[skinIndex];
+    const rainbow = !!skin.rainbow && !dead;
+
+    const fill = dead ? COL.bodyDead : (rainbow ? rainbowGradient(pts, 58, 1) : skin.body);
+    const edge = dead ? COL.bodyDeadDark : (rainbow ? rainbowGradient(pts, 30, 1) : skin.dark);
+    const sheen = dead ? 'rgba(255,255,255,0.18)' : (rainbow ? 'rgba(255,255,255,0.75)' : skin.light);
 
     tubePath(pts);
     ctx.fillStyle = fill;
@@ -980,7 +1156,7 @@
       ny: p.ny,
     })));
     ctx.globalAlpha = dead ? 0.16 : 0.45;
-    ctx.fillStyle = dead ? '#ffffff' : COL.bodyLight;
+    ctx.fillStyle = sheen;
     ctx.fill();
     ctx.globalAlpha = 1;
 
@@ -1057,13 +1233,32 @@
     ctx.restore();
   }
 
+  // First-run prompt over the first shower, since nothing else tells you a
+  // shower has to be gone under rather than over.
+  function drawDuckHint(o) {
+    const y = GROUND_Y - 96;
+    ctx.save();
+    ctx.globalAlpha = 0.55 + 0.45 * Math.sin(performance.now() / 140);
+    ctx.fillStyle = '#22301f';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 4;
+    ctx.font = '700 19px ui-rounded, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    const label = '↓  DUCK!';
+    ctx.strokeText(label, o.x, y);
+    ctx.fillText(label, o.x, y);
+    ctx.restore();
+  }
+
   function draw() {
     // Sky first and unshaken: it covers the whole canvas, so the shake below
     // can never expose an unpainted edge.
     drawBackground();
 
     ctx.save();
-    if (shake > 0) {
+    if (shake > 0 && !reducedMotion) {
       ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
     }
 
@@ -1081,6 +1276,11 @@
 
     drawWorm(spine);
     drawParticles();
+
+    if (state === 'running' && hintObstacle && performance.now() < hintUntil
+        && obstacles.includes(hintObstacle)) {
+      drawDuckHint(hintObstacle);
+    }
     ctx.restore();
   }
 
@@ -1088,18 +1288,21 @@
    * Input
    * ------------------------------------------------------------------ */
 
+  function doJump() {
+    worm.vy = JUMP_V;
+    worm.onGround = false;
+    dust(headX - 8, GROUND_Y, 5);
+    sfx.jump();
+  }
+
   function pressJump() {
     if (state === 'ready') { start(); return; }
     if (state === 'over') {
       if (performance.now() - overAt > 500) reset(true);
       return;
     }
-    if (worm.onGround) {
-      worm.vy = JUMP_V;
-      worm.onGround = false;
-      dust(headX - 8, GROUND_Y, 5);
-      sfx.jump();
-    }
+    if (worm.onGround) doJump();
+    else jumpBuffer = JUMP_BUFFER;   // held, and spent on landing
   }
 
   function releaseJump() {
@@ -1151,6 +1354,18 @@
     if (!muted) sfx.point();       // confirm it's back on
   });
   setMuted(muted);
+
+  function setSkin(i) {
+    skinIndex = ((i % SKINS.length) + SKINS.length) % SKINS.length;
+    const skin = SKINS[skinIndex];
+    swatch.style.background = skin.swatch || skin.body;
+    btnSkin.setAttribute('aria-label', `Worm colour: ${skin.name}. Tap to change.`);
+    btnSkin.title = skin.name;
+    try { localStorage.setItem(SKIN_KEY, String(skinIndex)); } catch { /* private mode */ }
+  }
+
+  btnSkin.addEventListener('click', () => setSkin(skinIndex + 1));
+  setSkin(skinIndex);
 
   stage.addEventListener('pointerdown', (e) => { e.preventDefault(); pressJump(); });
   stage.addEventListener('pointerup', releaseJump);

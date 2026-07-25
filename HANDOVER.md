@@ -1,24 +1,28 @@
-# Handover prompt
+# Handover
 
-Paste everything below this line as your first message in the new session.
+This file was the kickoff prompt for the session that started this repo, back
+when it was an empty scaffold with no decided project. That's done — the repo
+is now **Worm Runner**, an endless runner. See [README.md](README.md) for what
+it is, how to run it, and the design rules behind the two obstacle types.
 
----
+Kept only so the history makes sense; safe to delete.
 
-This repo (`KamalHazriq/new-idea`) is a fresh, empty scaffold — there's no
-code yet and I haven't locked in what I'm building. I'm starting this
-session from my phone, so keep replies short and ask me one question at a
-time instead of a long list.
+## If you're picking this up in a fresh session
 
-Before writing any code:
+Worth knowing before changing anything:
 
-1. Ask me what I want to build. I don't have a fixed idea yet — help me
-   think it through: what problem it solves, who it's for, and roughly
-   what kind of thing it is (web app, CLI, API, script, game, etc.).
-2. Once I've described it, propose a small, concrete plan (tech stack,
-   rough file structure) and confirm with me before scaffolding anything.
-3. Keep the first version minimal. No auth, database, or deployment
-   pipeline unless I specifically ask for it — we add those once the core
-   idea works.
-4. This is unrelated to my other projects (e.g. a portfolio site) —
-   treat this as a clean slate, don't assume shared conventions.
-5. Check in with me before any big or hard-to-reverse step.
+- **No build step, no dependencies at runtime.** `index.html`, `style.css` and
+  `game.js` are the whole game. Playwright is a dev dependency for the tests
+  only — the shipped page never loads it.
+- **Two fairness invariants are enforced in code, not by hand-tuning.**
+  Baguette clusters are capped by what the jump arc can actually carry, and
+  meteor showers are built tall enough that they cannot be jumped. Both fall
+  out of `JUMP_V` / `GRAVITY`, so changing those changes the obstacles too.
+- **`tests/` guards exactly that.** Run `npm test` after touching any movement
+  or obstacle constant. The suite drives the real game in a real browser
+  through real key events; it will tell you if the game has become unfair or
+  unwinnable, which is not something you would notice by playing for a minute.
+- **Deployment is automatic** on push to `main`, but Pages had to be switched
+  on by hand once (Settings → Pages → Source → GitHub Actions). A workflow
+  cannot do it: creating the Pages site needs repo-admin rights that
+  `GITHUB_TOKEN` doesn't have.
