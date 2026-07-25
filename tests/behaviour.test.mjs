@@ -27,6 +27,14 @@ const bagUrl = await host([['return Math.min(0.52, METEOR_CHANCE + score * 0.000
 // An empty world, so jump mechanics can be measured without an obstacle ever
 // interrupting or killing the worm mid-trial.
 const emptyUrl = await host([['if (spawnGap <= 0) spawnObstacle();', 'if (spawnGap <= 0) spawnGap = 1e9;']]);
+// Same empty world, but with the buffer shrunk to under a single frame. At its
+// real 130 ms there is always time left over on the landing frame, so both a
+// correct and an incorrect implementation fire and the ordering is invisible;
+// shrunk, the ordering is the only thing that decides.
+const microUrl = await host([
+  ['if (spawnGap <= 0) spawnObstacle();', 'if (spawnGap <= 0) spawnGap = 1e9;'],
+  ['const JUMP_BUFFER = 0.13;', 'const JUMP_BUFFER = 0.001;'],
+]);
 
 const allErrors = [];
 
@@ -180,7 +188,10 @@ const allErrors = [];
       if (d.state !== 'running') { requestAnimationFrame(tick); return; }
 
       if (phase === 'idle') {
-        if (w.onGround) { key('keydown'); key('keyup'); phase = 'rising'; }
+        // keydown only. Releasing straight away would trigger the early-release
+        // jump cut, capping the apex near 23 units — well under the heights this
+        // sweep needs to reach, which would quietly neuter the whole test.
+        if (w.onGround) { key('keydown'); phase = 'rising'; }
       } else if (phase === 'rising') {
         if (!w.onGround && w.vy > 0 && standY - w.y < HEIGHTS[results.length]) {
           pressHeight = standY - w.y;
@@ -195,7 +206,9 @@ const allErrors = [];
           phase = results.length < HEIGHTS.length ? 'settle' : 'done';
         }
       } else if (phase === 'settle') {
-        if (w.onGround) phase = 'idle';
+        // Wait for a genuine standing rest. Straight after a duck the worm sits
+        // ~12 units low and would re-land instantly, stalling the next trial.
+        if (w.onGround && !w.ducking && Math.abs(standY - w.y) < 1) phase = 'idle';
       }
 
       if (phase === 'done') return resolve(results);
@@ -208,6 +221,112 @@ const allErrors = [];
   report.check('early jump press survives until landing',
     trials.length >= 6 && fired === trials.length,
     `${fired}/${trials.length} fired, from heights ${trials.map((t) => t.height).join(', ')}`);
+  allErrors.push(...errors);
+  await context.close();
+}
+
+/* ---------- the buffer must be spent before it is aged ---------- *
+ * The assertion above proves buffering works; it does not pin down *when* the
+ * buffer is expired relative to being spent, because at 130 ms there is always
+ * slack left on the landing frame and both orderings fire.
+ *
+ * With the buffer shrunk to under one frame, only the correct ordering can ever
+ * fire: a press made on the last airborne frame is still live when the landing
+ * check runs, but is already zero if the buffer was aged first. Pressing on
+ * every airborne frame guarantees a press lands in that final frame, so a
+ * correct build bounces continuously and is essentially never seen on the
+ * ground, while an incorrect one lands once and stays there. */
+{
+  const { context, page, errors } = await openPage(browser, microUrl, VIEWPORTS.desktop);
+  await page.keyboard.press('Space');
+  await sleep(400);
+
+  const r = await page.evaluate(() => new Promise((resolve) => {
+    let seenAir = false;
+    let frames = 0;
+    let grounded = 0;
+    const started = performance.now();
+
+    function tick(now) {
+      const d = window.__dbg;
+      const w = d.worm;
+      if (d.state === 'running') {
+        if (!w.onGround) {
+          seenAir = true;
+          window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true }));
+        } else if (!seenAir) {
+          window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true }));
+        }
+        if (seenAir) { frames++; if (w.onGround) grounded++; }
+      }
+      if (now - started > 2500) return resolve({ frames, grounded });
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }));
+
+  report.check('a buffer still live on the landing frame is spent, not aged out',
+    r.frames > 30 && r.grounded <= r.frames * 0.1,
+    `grounded on ${r.grounded}/${r.frames} frames`);
+  allErrors.push(...errors);
+  await context.close();
+}
+
+/* ---------- ...but a duck must override it ---------- *
+ * Ducking in mid-air is the fast-fall, so "buffer a jump, spot a shower, hold
+ * duck to get down early" is exactly how a player reacts to a shower. If the
+ * buffered jump still fires on landing it launches them into the thing they
+ * ducked for, which is worse than having dropped the input in the first place. */
+{
+  const { context, page, errors } = await openPage(browser, emptyUrl, VIEWPORTS.desktop);
+  await page.keyboard.press('Space');
+  await sleep(400);
+
+  const trials = await page.evaluate(() => new Promise((resolve) => {
+    const results = [];
+    const key = (type, code) => window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true }));
+    let phase = 'idle';
+    let pressAt = 0;
+    const started = performance.now();
+
+    function tick(now) {
+      if (now - started > 20000) return resolve(results);
+      const d = window.__dbg;
+      const w = d.worm;
+      const standY = d.GROUND_Y - 22;
+
+      if (d.state !== 'running') { requestAnimationFrame(tick); return; }
+
+      if (phase === 'idle') {
+        if (w.onGround) { key('keydown', 'Space'); phase = 'rising'; }
+      } else if (phase === 'rising') {
+        if (!w.onGround && w.vy > 0 && standY - w.y < 60) {
+          key('keydown', 'Space');            // buffer a jump…
+          key('keyup', 'Space');
+          key('keydown', 'ArrowDown');        // …then commit to ducking instead
+          pressAt = now;
+          phase = 'watch';
+        }
+      } else if (phase === 'watch') {
+        if (now - pressAt > 300) {
+          results.push({ grounded: w.onGround, ducking: w.ducking });
+          key('keyup', 'ArrowDown');
+          phase = results.length < 4 ? 'settle' : 'done';
+        }
+      } else if (phase === 'settle') {
+        if (w.onGround && !w.ducking && Math.abs(standY - w.y) < 1) phase = 'idle';
+      }
+
+      if (phase === 'done') return resolve(results);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }));
+
+  const stayedDown = trials.filter((t) => t.grounded).length;
+  report.check('holding duck cancels a buffered jump',
+    trials.length >= 4 && stayedDown === trials.length,
+    `${stayedDown}/${trials.length} stayed down`);
   allErrors.push(...errors);
   await context.close();
 }

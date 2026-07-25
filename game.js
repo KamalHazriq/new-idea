@@ -796,8 +796,16 @@
           dust(headX - 6, GROUND_Y, 7);
           sfx.land();
           // A jump pressed just before touchdown used to be swallowed; now it
-          // fires the instant the worm lands.
-          if (jumpBuffer > 0) { jumpBuffer = 0; doJump(); }
+          // fires the instant the worm lands — unless the player is holding
+          // duck by then. Someone flat on the ground at touchdown wants to
+          // stay there, and launching them anyway throws them into the shower
+          // they ducked for. That sequence is not exotic: ducking in mid-air
+          // is the fast-fall, so "buffer a jump, spot a shower, slam duck to
+          // get down early" is exactly how a good player would react.
+          if (jumpBuffer > 0) {
+            jumpBuffer = 0;
+            if (!worm.ducking) doJump();
+          }
         }
       } else {
         worm.y += (restY() - worm.y) * Math.min(1, dt * 18);
@@ -1315,6 +1323,9 @@
   function setDuck(on) {
     const want = state === 'running' ? on : false;
     if (want && !worm.ducking && worm.onGround) sfx.duck();
+    // Ducking after an early jump press means the player changed their mind;
+    // the later input wins rather than surfacing on the next landing.
+    if (want) jumpBuffer = 0;
     worm.ducking = want;
   }
 
