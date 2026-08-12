@@ -116,13 +116,18 @@ export const VIEWPORTS = {
  * Plays the game about as well as it can be played, so a death means the game
  * was unfair rather than that the bot was sloppy.
  *
- * `meteorPolicy` is the interesting knob: 'duck' is correct play, 'jump' plays
- * meteors wrongly on purpose so a suite can assert that doing so is fatal.
+ * The policy knobs are the interesting part: they let a suite play an obstacle
+ * *wrongly* on purpose and assert that doing so is punished, which is how the
+ * "ducking is mandatory" and "restraint is mandatory" rules get real teeth.
+ *
+ *   meteorPolicy: 'duck' (correct) | 'jump'
+ *   archPolicy:   'tap'  (correct) | 'hold' | 'ignore' | 'duck'
  */
-export function botScript({ meteorPolicy = 'duck' } = {}) {
+export function botScript({ meteorPolicy = 'duck', archPolicy = 'tap' } = {}) {
   return `
 window.__bot = { deaths: [], maxScore: 0, jumps: 0, ducks: 0 };
 const key = (t, c) => window.dispatchEvent(new KeyboardEvent(t, { code: c, bubbles: true }));
+const meteorPolicy = '${meteorPolicy}';
 let jumpUntil = 0, ducking = false, lastState = '';
 
 function tick(now) {
@@ -157,8 +162,27 @@ function tick(now) {
       }
       if (best) {
         const tta = best.lead / ws;
-        const jumpIt = best.o.type === 'baguette' || '${meteorPolicy}' === 'jump';
-        if (jumpIt) {
+        const kind = best.o.type;
+        const archPolicy = '${archPolicy}';
+
+        if (kind === 'arch') {
+          // An arch has to be hopped, not cleared: hold and you clip the rock.
+          if (archPolicy === 'duck') {
+            const want = tta < 0.5 && tta > -0.3;
+            if (want && !ducking) { key('keydown', 'ArrowDown'); ducking = true; window.__bot.ducks++; }
+            if (!want && ducking) { key('keyup', 'ArrowDown'); ducking = false; }
+          } else if (archPolicy !== 'ignore') {
+            if (ducking) { key('keyup', 'ArrowDown'); ducking = false; }
+            if (d.worm.onGround && tta <= 0.20 && tta > -0.05) {
+              key('keydown', 'Space');
+              window.__bot.jumps++;
+              // 'tap' is a real tap, not a single-frame blip: ~60 ms buys a
+              // taller hop with more airtime, which is what makes the loaf
+              // spannable on a narrow world, while staying under the rock.
+              jumpUntil = now + (archPolicy === 'hold' ? 420 : 60);
+            }
+          }
+        } else if (kind === 'baguette' || meteorPolicy === 'jump') {
           if (ducking) { key('keyup', 'ArrowDown'); ducking = false; }
           if (d.worm.onGround && tta <= 0.24 && tta > -0.05) {
             key('keydown', 'Space');

@@ -390,6 +390,97 @@ const allErrors = [];
   await context.close();
 }
 
+/* ---------- pause actually stops the world ---------- */
+{
+  const { context, page, errors } = await openPage(browser, emptyUrl, VIEWPORTS.desktop);
+  await page.keyboard.press('Space');
+  await sleep(1200);
+
+  await page.keyboard.press('KeyP');
+  await sleep(150);
+  const title = await page.locator('#overlayTitle').textContent();
+  report.check('P shows the paused overlay', title === 'PAUSED', `overlay="${title}"`);
+
+  const before = await page.evaluate(() => ({
+    score: Math.floor(window.__dbg.score),
+    wave: window.__dbg.wave,
+  }));
+  await sleep(1000);
+  const after = await page.evaluate(() => ({
+    score: Math.floor(window.__dbg.score),
+    wave: window.__dbg.wave,
+  }));
+  report.check('the world is frozen while paused',
+    after.score === before.score && after.wave === before.wave,
+    `score ${before.score}->${after.score}, wave ${before.wave.toFixed(2)}->${after.wave.toFixed(2)}`);
+
+  await page.keyboard.press('KeyP');
+  await sleep(600);
+  const live = await page.evaluate(() => ({
+    score: Math.floor(window.__dbg.score),
+    hidden: document.getElementById('overlay').classList.contains('hidden'),
+  }));
+  report.check('unpausing resumes', live.hidden && live.score > after.score,
+    `score ${after.score}->${live.score}`);
+  allErrors.push(...errors);
+  await context.close();
+}
+
+/* ---------- one input releasing must not cut another's jump ---------- *
+ * Three things can press jump: the keyboard, the JUMP pad and a tap on the
+ * canvas. Held state used to be a single boolean, so releasing any one of them
+ * cleared it — and a jump the player was still holding on the keyboard came out
+ * cut because a stray canvas tap had ended. Here Space is held throughout while
+ * a canvas tap begins and ends mid-fall; the buffered jump must still be full
+ * height. */
+{
+  const { context, page, errors } = await openPage(browser, emptyUrl, VIEWPORTS.desktop);
+  await page.keyboard.press('Space');
+  await sleep(400);
+
+  const apex = await page.evaluate(() => new Promise((resolve) => {
+    const key = (type) => window.dispatchEvent(new KeyboardEvent(type, { code: 'Space', bubbles: true }));
+    const stage = document.getElementById('stage');
+    const tap = (type) => stage.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 7, pointerType: 'touch' }));
+    let phase = 'idle';
+    let launched = false;
+    let peak = 0;
+    let pressAt = 0;
+    const started = performance.now();
+
+    function tick(now) {
+      if (now - started > 8000) return resolve(null);
+      const d = window.__dbg;
+      const w = d.worm;
+      const standY = d.GROUND_Y - 22;
+      if (d.state !== 'running') { requestAnimationFrame(tick); return; }
+
+      if (phase === 'idle') {
+        if (w.onGround && Math.abs(standY - w.y) < 1) { key('keydown'); phase = 'rising'; }
+      } else if (phase === 'rising') {
+        if (!w.onGround && w.vy > 0 && standY - w.y < 40) {
+          // Space stays down the whole time. A canvas tap arrives and leaves.
+          tap('pointerdown');
+          tap('pointerup');
+          pressAt = now;
+          phase = 'measure';
+        }
+      } else if (phase === 'measure') {
+        if (w.vy < 0) launched = true;
+        if (launched) peak = Math.max(peak, standY - w.y);
+        if (now - pressAt > 900) { key('keyup'); return resolve(peak); }
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }));
+
+  report.check('a canvas tap ending does not cut a held keyboard jump',
+    apex !== null && apex > 90, `apex ${apex === null ? 'n/a' : apex.toFixed(1)} (cut would be ~21)`);
+  allErrors.push(...errors);
+  await context.close();
+}
+
 report.check('no console or page errors', allErrors.length === 0, allErrors.slice(0, 2).join(' | '));
 
 await browser.close();

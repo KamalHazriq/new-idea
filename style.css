@@ -86,7 +86,7 @@ body {
   background: #5fbf5f;
 }
 
-.mute {
+.icon-btn {
   padding: 0 2px;
   border: 0;
   background: none;
@@ -98,7 +98,7 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-.mute[aria-pressed="true"] { opacity: 0.4; }
+.icon-btn[aria-pressed="true"] { opacity: 0.4; }
 
 .scores {
   display: flex;

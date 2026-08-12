@@ -69,11 +69,30 @@
   const METEOR_UNLOCK = 260;     // score at which meteors join in
   const METEOR_CHANCE = 0.34;
 
+  // The third demand: restraint. A loaf low enough that a tap clears it, under a
+  // rock low enough that a full-height jump clips it — so the only way through is
+  // a deliberately short hop. The variable-height jump had no obstacle that used
+  // it, which meant releasing early was a mechanic with nothing to be for.
+  // Derived, like the other two. The hop's apex must land inside
+  // [loaf + headR - STAND_H, rockUnderside - headR - STAND_H] = [15, 87].
+  //
+  // The rock sits higher than the minimum that would "work", on purpose. A
+  // bare-minimum hop peaks at 23 units and is airborne for only 0.31 s, and on
+  // a narrow phone world — where horizontal speed is halved but the worm's own
+  // footprint is not — that barely spans the loaf plus the worm. Leaving room
+  // for a taller hop is what makes the obstacle fair on a phone; the ceiling is
+  // still far below the full-hold apex of 116, so holding is punished.
+  const ARCH_LOAF_H = 28;
+  const ARCH_ROCK_H = 130;       // rock centre above the ground
+  const ARCH_UNLOCK = 600;       // later than meteors; it is the subtlest one
+  const ARCH_CHANCE = 0.24;
+
   const SCORE_RATE = 0.06;
   const HI_KEY = 'wormrunner.hi';
   const MUTE_KEY = 'wormrunner.muted';
   const SKIN_KEY = 'wormrunner.skin';
   const DUCKED_KEY = 'wormrunner.ducked';   // has the player ever cleared a shower
+  const HOPPED_KEY = 'wormrunner.hopped';   // …or ever cleared an arch
 
   const JUMP_BUFFER = 0.13;      // a jump pressed this soon before landing still counts
 
@@ -132,6 +151,7 @@
   const btnDuck = document.getElementById('btnDuck');
   const btnMute = document.getElementById('btnMute');
   const btnSkin = document.getElementById('btnSkin');
+  const btnPause = document.getElementById('btnPause');
   const swatch = document.getElementById('swatch');
 
   /* ------------------------------------------------------------------ *
@@ -171,11 +191,18 @@
   const pebbles = [];
   const stars = [];
 
+  let paused = false;
   let jumpBuffer = 0;            // seconds a pressed-early jump stays live
-  let jumpHeld = false;          // needed at landing: a buffered tap must still
-                                 // short-hop, and its release already happened
-  let hintUntil = 0;             // when the "DUCK" prompt stops showing
+  // Which inputs are currently holding jump. A single boolean was wrong: three
+  // sources can press jump (keyboard, the JUMP pad, a tap on the canvas), and
+  // releasing any one of them would clear the flag while another was still
+  // held — cutting a jump that should have gone full height. Needed at landing,
+  // where a buffered tap must still come out as a short hop.
+  const jumpSources = new Set();
+  const jumpHeld = () => jumpSources.size > 0;
+  let hintUntil = 0;             // when the first-run prompt stops showing
   let hintObstacle = null;
+  let hintText = '';
   let newBest = false;
 
   // Motion can be genuinely unpleasant for some people, and this page is all
@@ -197,9 +224,14 @@
       return Number.isInteger(n) && n >= 0 && n < SKINS.length ? n : 0;
     } catch { return 0; }
   })();
-  let hasDucked = (() => {
-    try { return localStorage.getItem(DUCKED_KEY) === '1'; } catch { return false; }
-  })();
+  const learned = (key) => {
+    try { return localStorage.getItem(key) === '1'; } catch { return false; }
+  };
+  const markLearned = (key) => {
+    try { localStorage.setItem(key, '1'); } catch { /* private mode */ }
+  };
+  let hasDucked = learned(DUCKED_KEY);
+  let hasHopped = learned(HOPPED_KEY);
 
   const MAX_LOOKBACK = SEGMENTS * SEG_SPACING * 1.6;
 
@@ -361,10 +393,12 @@
     shake = 0;
     flash = 0;
     culprit = null;
+    paused = false;
     jumpBuffer = 0;
-    jumpHeld = false;
+    jumpSources.clear();
     hintObstacle = null;
     hintUntil = 0;
+    hintText = '';
     newBest = false;
 
     worm.y = standY();
@@ -442,12 +476,16 @@
   }
 
   function setOverlay() {
-    if (state === 'running') {
+    if (state === 'running' && !paused) {
       overlay.classList.add('hidden');
       return;
     }
     overlay.classList.remove('hidden');
-    if (state === 'ready') {
+    if (state === 'running') {            // i.e. paused
+      overlayTitle.textContent = 'PAUSED';
+      overlaySub.textContent = `Score ${pad5(score)}`;
+      overlayHint.textContent = 'Press P or tap to resume';
+    } else if (state === 'ready') {
       overlayTitle.textContent = 'Worm Runner';
       overlaySub.textContent = 'Jump the baguettes. Duck the meteors.';
       overlayHint.textContent = 'Press Space or tap to start';
@@ -543,7 +581,8 @@
   }
 
   function spawnObstacle() {
-    if (score >= METEOR_UNLOCK && Math.random() < meteorChance()) spawnMeteor();
+    if (score >= ARCH_UNLOCK && Math.random() < ARCH_CHANCE) spawnArch();
+    else if (score >= METEOR_UNLOCK && Math.random() < meteorChance()) spawnMeteor();
     else spawnBaguettes();
 
     // Gap measured in time-to-arrive, so high speeds stay fair.
@@ -638,6 +677,43 @@
     // than over. Prompt on the first one, until the player has cleared one.
     if (!hasDucked && !hintObstacle) {
       hintObstacle = shower;
+      hintText = '↓  DUCK!';
+      hintUntil = performance.now() + 2600;
+    }
+  }
+
+  function spawnArch() {
+    const verts = [];
+    for (let v = 0; v < 9; v++) verts.push(1 - Math.random() * 0.3);
+    const craters = [];
+    for (let c = 0; c < 3; c++) {
+      craters.push({
+        a: Math.random() * Math.PI * 2,
+        d: Math.random() * 0.5,
+        r: 0.13 + Math.random() * 0.14,
+      });
+    }
+
+    const w = (18 + Math.random() * 6) * widthFactor;
+    obstacles.push({
+      type: 'arch',
+      x: worldW + 30,
+      w,
+      vxMag: vx() * 1.06,
+      loaf: { w, h: ARCH_LOAF_H, lean: (Math.random() - 0.5) * 0.12 },
+      // No dive: it holds its height the whole way in, so the gap is legible as
+      // a gap from the moment it appears rather than closing as it arrives.
+      // Bigger than a shower rock so it reads as a ceiling rather than as one
+      // more thing to dodge. That lowers its underside, which the numbers above
+      // already account for.
+      rock: { y: GROUND_Y - ARCH_ROCK_H, vy: 0, r: METEOR_R * 1.3, verts, craters,
+              spin: Math.random() * Math.PI * 2 },
+    });
+
+    // "Jump, but not too high" is the least guessable rule in the game.
+    if (!hasHopped && !hintObstacle) {
+      hintObstacle = obstacles[obstacles.length - 1];
+      hintText = 'TAP  —  LOW HOP!';
       hintUntil = performance.now() + 2600;
     }
   }
@@ -736,6 +812,13 @@
             if (circleRect(c.x, c.y, c.r, rx, ry, p.w, p.h)) return o;
           }
         }
+      } else if (o.type === 'arch') {
+        if (o.x > headX + 60 || o.x + o.w < headX - 60) continue;
+        const ry = GROUND_Y - o.loaf.h;
+        for (const c of probes) {
+          if (circleRect(c.x, c.y, c.r, o.x, ry, o.loaf.w, o.loaf.h)) return o;
+          if (circleCircle(c.x, c.y, c.r, o.x + o.w / 2, o.rock.y, o.rock.r * 0.84)) return o;
+        }
       } else {
         if (Math.abs(o.x - headX) > 90) continue;
         for (const rock of o.rocks) {
@@ -814,7 +897,7 @@
               // it here — otherwise buffering quietly upgrades every tap to a
               // full-height jump and takes the height control away exactly when
               // the player was relying on it.
-              if (!jumpHeld) worm.vy *= JUMP_CUT;
+              if (!jumpHeld()) worm.vy *= JUMP_CUT;
             }
           }
         }
@@ -851,6 +934,17 @@
         if (o.type === 'baguette') {
           o.x -= ws * dt;
           if (o.x + o.w < -40) obstacles.splice(i, 1);
+        } else if (o.type === 'arch') {
+          o.vxMag = ws * 1.06;
+          o.x -= ws * dt;
+          o.rock.spin += dt * 3.2;
+          if (Math.random() < 0.5) spark(o.x + o.w / 2 + o.rock.r * 0.8, o.rock.y - o.rock.r * 0.3);
+          if (o.x + o.w < headX - 50 && !hasHopped) {
+            hasHopped = true;
+            hintObstacle = null;
+            markLearned(HOPPED_KEY);
+          }
+          if (o.x + o.w < -60) obstacles.splice(i, 1);
         } else {
           o.vxMag = ws * 1.06;
           o.x -= o.vxMag * dt;
@@ -870,7 +964,7 @@
           if (o.x < headX - 50 && !hasDucked) {
             hasDucked = true;
             hintObstacle = null;
-            try { localStorage.setItem(DUCKED_KEY, '1'); } catch { /* private mode */ }
+            markLearned(DUCKED_KEY);
           }
           if (o.x < -60) obstacles.splice(i, 1);
         }
@@ -1244,6 +1338,14 @@
         ctx.fill();
         ctx.stroke();
       }
+    } else if (o.type === 'arch') {
+      roundRectPath(o.x, GROUND_Y - o.loaf.h, o.loaf.w, o.loaf.h, o.loaf.w / 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(o.x + o.w / 2, o.rock.y, o.rock.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     } else {
       for (const rock of o.rocks) {
         ctx.beginPath();
@@ -1257,8 +1359,8 @@
 
   // First-run prompt over the first shower, since nothing else tells you a
   // shower has to be gone under rather than over.
-  function drawDuckHint(o) {
-    const y = GROUND_Y - 96;
+  function drawHint(o, label) {
+    const y = o.type === 'arch' ? GROUND_Y - 172 : GROUND_Y - 96;
     ctx.save();
     ctx.globalAlpha = 0.55 + 0.45 * Math.sin(performance.now() / 140);
     ctx.fillStyle = '#22301f';
@@ -1268,7 +1370,6 @@
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
-    const label = '↓  DUCK!';
     ctx.strokeText(label, o.x, y);
     ctx.fillText(label, o.x, y);
     ctx.restore();
@@ -1289,6 +1390,9 @@
     for (const o of obstacles) {
       if (o.type === 'baguette') {
         for (const p of o.parts) drawBaguette(o.x + p.dx, p.h, p.w, p.lean);
+      } else if (o.type === 'arch') {
+        drawBaguette(o.x, o.loaf.h, o.loaf.w, o.loaf.lean);
+        drawMeteorRock(o.x + o.w / 2, o.rock, o.vxMag);
       } else {
         for (const rock of o.rocks) drawMeteorRock(o.x, rock, o.vxMag);
       }
@@ -1301,7 +1405,7 @@
 
     if (state === 'running' && hintObstacle && performance.now() < hintUntil
         && obstacles.includes(hintObstacle)) {
-      drawDuckHint(hintObstacle);
+      drawHint(hintObstacle, hintText);
     }
     ctx.restore();
   }
@@ -1310,6 +1414,14 @@
    * Input
    * ------------------------------------------------------------------ */
 
+  function setPaused(on) {
+    if (state !== 'running' || paused === on) return;
+    paused = on;
+    if (on) jumpSources.clear();   // the release will be missed while paused
+    last = 0;                      // resume without a dt spike
+    setOverlay();
+  }
+
   function doJump() {
     worm.vy = JUMP_V;
     worm.onGround = false;
@@ -1317,19 +1429,22 @@
     sfx.jump();
   }
 
-  function pressJump() {
+  function pressJump(source = 'key') {
     if (state === 'ready') { start(); return; }
     if (state === 'over') {
       if (performance.now() - overAt > 500) reset(true);
       return;
     }
-    jumpHeld = true;
+    if (paused) { setPaused(false); return; }
+    jumpSources.add(source);
     if (worm.onGround) doJump();
     else jumpBuffer = JUMP_BUFFER;   // held, and spent on landing
   }
 
-  function releaseJump() {
-    jumpHeld = false;
+  function releaseJump(source = 'key') {
+    jumpSources.delete(source);
+    // Only an actual full release should cut the arc.
+    if (jumpHeld()) return;
     if (state === 'running' && !worm.onGround && worm.vy < 0) worm.vy *= JUMP_CUT;
   }
 
@@ -1348,14 +1463,15 @@
     const isDuck = c === 'ArrowDown' || c === 'KeyS';
     if (isJump || isDuck) e.preventDefault();
     if (e.repeat) return;
-    if (isJump) pressJump();
+    if (isJump) pressJump('key');
     else if (isDuck) setDuck(true);
-    else if ((c === 'Enter' || c === 'KeyR') && state !== 'running') pressJump();
+    else if (c === 'KeyP' || c === 'Escape') setPaused(!paused);
+    else if ((c === 'Enter' || c === 'KeyR') && state !== 'running') pressJump('key');
   });
 
   addEventListener('keyup', (e) => {
     const c = e.code;
-    if (c === 'Space' || c === 'ArrowUp' || c === 'KeyW') releaseJump();
+    if (c === 'Space' || c === 'ArrowUp' || c === 'KeyW') releaseJump('key');
     else if (c === 'ArrowDown' || c === 'KeyS') setDuck(false);
   });
 
@@ -1373,7 +1489,7 @@
     el.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
-  bindPad(btnJump, pressJump, releaseJump);
+  bindPad(btnJump, () => pressJump('pad'), () => releaseJump('pad'));
   bindPad(btnDuck, () => setDuck(true), () => setDuck(false));
 
   btnMute.addEventListener('click', () => {
@@ -1391,12 +1507,13 @@
     try { localStorage.setItem(SKIN_KEY, String(skinIndex)); } catch { /* private mode */ }
   }
 
+  btnPause.addEventListener('click', () => setPaused(!paused));
   btnSkin.addEventListener('click', () => setSkin(skinIndex + 1));
   setSkin(skinIndex);
 
-  stage.addEventListener('pointerdown', (e) => { e.preventDefault(); pressJump(); });
-  stage.addEventListener('pointerup', releaseJump);
-  stage.addEventListener('pointercancel', releaseJump);
+  stage.addEventListener('pointerdown', (e) => { e.preventDefault(); pressJump('stage'); });
+  stage.addEventListener('pointerup', () => releaseJump('stage'));
+  stage.addEventListener('pointercancel', () => releaseJump('stage'));
   stage.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // Hybrid laptops report a fine pointer but may still be touched; reveal the
@@ -1415,7 +1532,7 @@
     if (!last) last = now;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    update(dt);
+    if (!paused) update(dt);
     draw();
     requestAnimationFrame(frame);
   }
@@ -1423,7 +1540,15 @@
   addEventListener('resize', resize);
   addEventListener('orientationchange', resize);
   if (window.visualViewport) visualViewport.addEventListener('resize', resize);
-  document.addEventListener('visibilitychange', () => { last = 0; });
+  // Losing focus swallows the keyup, which would leave 'key' held forever.
+  addEventListener('blur', () => { jumpSources.clear(); setDuck(false); });
+
+  document.addEventListener('visibilitychange', () => {
+    last = 0;
+    // Coming back to a running game mid-obstacle is an unfair death, so a
+    // hidden tab pauses rather than resuming straight into play.
+    if (document.hidden) setPaused(true);
+  });
 
   resize();
   reset(false);
