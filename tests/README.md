@@ -1,7 +1,7 @@
 # Tests
 
 ```sh
-npm install          # Playwright — a dev dependency only, the game ships without it
+npm ci               # Playwright — a dev dependency only, the game ships without it
 npx playwright install chromium
 npm test             # ~9 minutes
 npm run test:long    # ~12 minutes; runs past the point where speed hits its cap
@@ -61,6 +61,9 @@ show. That hook exists **only in test copies** — never in the shipped `game.js
   each other makes them flaky.
 - Set `CHROMIUM_PATH` to use a Chromium that Playwright didn't install.
 - CI runs the whole suite on every push and pull request.
+- The browser cache in CI is keyed on `package-lock.json`, not `package.json`.
+  The latter holds a caret range, so hashing it would happily pair a freshly
+  resolved Playwright with an older cached browser build and fail every run.
 - These are real-time browser tests, so they are not perfectly deterministic. A
   lone failure in a bot run is worth re-running once before believing it; a
   repeatable one is real. The assertions are deliberately coarse (zero deaths

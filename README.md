@@ -92,7 +92,7 @@ Opening `index.html` directly works too.
 ## Tests
 
 ```sh
-npm install && npx playwright install chromium
+npm ci && npx playwright install chromium
 npm test          # ~9 minutes
 ```
 

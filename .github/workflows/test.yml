@@ -14,7 +14,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The suites drive a real browser at real speed; ~7 minutes is normal and
+    # The suites drive a real browser at real speed; ~9 minutes is normal and
     # the cap is only here to stop a hung browser burning a whole hour.
     timeout-minutes: 25
     steps:
@@ -25,27 +25,32 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
+      # `ci` rather than `install`: the lockfile is what makes the browser cache
+      # key below correspond to the Playwright actually being installed.
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
-      # Chromium is ~150 MB and rarely changes; caching it is most of the
-      # difference between a fast run and a slow one.
+      # Keyed on the lockfile, not package.json. package.json holds a caret
+      # range — today "^1.56.0" resolves to 1.62.1 — so hashing it would let a
+      # newer Playwright be installed against an older cached browser build,
+      # which fails every run until something unrelated busts the key.
       - name: Restore Playwright browsers
         id: browsers
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package.json') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
-      - name: Install Chromium
-        if: steps.browsers.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium
-
-      # A cached browser still needs its system libraries on a fresh runner.
+      # System libraries are needed on every fresh runner, cache hit or not.
       - name: Install browser system dependencies
-        if: steps.browsers.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
+
+      # Idempotent — a fast no-op when the cache already holds the right build,
+      # and a second line of defence if the key ever goes stale anyway.
+      - name: Install Chromium
+        run: npx playwright install chromium
 
       - name: Run tests
         run: npm test
