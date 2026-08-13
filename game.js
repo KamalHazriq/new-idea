@@ -38,6 +38,10 @@
   // the creature gets killed by a baguette it has visibly already cleared.
   const HIT_PROBES = 3;
   const HIT_SHRINK = 0.8;        // hitboxes sit inside the drawn body
+  const SPINE_BULGE = 1.05;      // the spine's radius at the head, before taper
+  const ROCK_HIT = 0.84;         // rocks are lumpy, so their hitbox is inset
+  const ROCK_MIN = 0.86;         // …and each one is a random size in this range
+  const ROCK_MAX = 1.08;
 
   const BAGUETTE_MIN_H = 34;
   const BAGUETTE_MAX_H = 62;
@@ -72,6 +76,7 @@
   // still far below the full-hold apex of 116, so holding is punished.
   const ARCH_LOAF_H = 28;
   const ARCH_ROCK_H = 130;       // rock centre above the ground
+  const ARCH_ROCK_SCALE = 1.3;   // …and it is a chunkier rock than a meteor
   const ARCH_UNLOCK = 600;       // later than meteors; it is the subtlest one
   const ARCH_CHANCE = 0.24;
 
@@ -99,20 +104,47 @@
    * clearableSpan, and `creatureFits()`, which the test suite runs over every
    * entry here):
    *
-   *   7.6 <  standH - r  < 34.4   below: a tap cannot clear the arch loaf
-   *                                above: the jump clears a meteor shower and
-   *                                       ducking stops being a mechanic
-   *  28.2 <  standH + r  < 88.3   below: a meteor passes over a standing head
-   *                                above: a tap cannot stay under the arch rock
-   *          duckH  + rd < 20.2   above: ducking does not clear a meteor
+   *   4.6 + m  <  standH - r  <  30.5 - m
+   *        below: a tap cannot clear the arch loaf
+   *        above: a full jump clears the shower, and ducking stops being a
+   *               mechanic at all
    *
-   * ...where r = headR * HIT_SHRINK and rd = r * DUCK_SCALE. `creatureFits()`
-   * also checks that the tallest baguette is clearable and that a held jump
-   * clips the arch rock; with this jump arc neither can fail for any plausible
-   * body, but they are the two rules that break first if the arc changes.
+   *  25.9 + m  <  standH + r  <  91.3 - m
+   *        below: a meteor passes over a standing head
+   *        above: a tap cannot stay under the arch rock
+   *
+   *               duckH  + rd  <  23.3 - md
+   *        above: ducking does not clear a meteor
+   *
+   * ...where r and rd are the head's real hit radius standing and ducked
+   * (`headHitR`), and m / md are the creature's own head bob plus a unit of
+   * slack. Note that r is *not* headR: the spine bulges the head by
+   * SPINE_BULGE and the hitbox then shrinks by HIT_SHRINK, and an envelope
+   * that skips either one silently loosens every rule below it.
+   *
+   * `creatureFits()` also checks that the tallest baguette is clearable and
+   * that a held jump clips the arch rock; with this jump arc neither can fail
+   * for any plausible body, but they are the two that break first if the arc
+   * changes.
    * ------------------------------------------------------------------ */
 
   const DUCK_SCALE = 0.62;       // body radius multiplier when flattened
+  const DUCK_WAVE_SCALE = 0.43;  // …and how much of the wriggle survives ducking
+
+  // The head barely stirs while the tail whips wide — this is the head's share
+  // of the amplitude. Beyond looking right (the head leads, the body follows)
+  // it is what keeps the collision probes at a predictable height: a bobbing
+  // head would sometimes duck under a meteor on its own, which would wreck the
+  // duck mechanic. It is small, not zero, so the envelope below budgets for it.
+  const WAVE_HEAD_SHARE = 0.06;
+
+  // The head probe's true collision radius. The spine bulges the head slightly
+  // past headR and the hitbox then shrinks inside the drawn body; both happen
+  // for real in creatureSpine and hitFrom, so anything reasoning about the
+  // hitbox has to apply both too. Getting this wrong understates the creature
+  // and quietly loosens every rule derived from it.
+  const headHitR = (c, ducked) =>
+    c.headR * (ducked ? DUCK_SCALE : 1) * SPINE_BULGE * HIT_SHRINK;
 
   const CREATURES = [
     { name: 'Worm', plan: 'tube',
@@ -163,21 +195,38 @@
   // creature outside the envelope doesn't merely look different — it quietly
   // plays a different, possibly unwinnable, game.
   function creatureFits(c) {
-    const r = c.headR * HIT_SHRINK;
-    const rd = r * DUCK_SCALE;
+    const r = headHitR(c, false);
+    const rd = headHitR(c, true);
     const fullApex = JUMP_V * JUMP_V / (2 * GRAVITY);
     const tapApex = (JUMP_V * JUMP_CUT) ** 2 / (2 * GRAVITY);
-    const meteorBottom = METEOR_H - METEOR_R * 0.84;
-    const showerTop = METEOR_H + (METEOR_ROCKS - 1) * METEOR_GAP + METEOR_R;
-    const archUnder = ARCH_ROCK_H - METEOR_R * 1.3 * 0.84;
+
+    // Rocks are randomly sized, so each rule takes the size that makes it
+    // hardest to satisfy rather than a nominal one: the smallest rock hangs
+    // highest (hardest to be hit by while standing, and lowest ceiling for the
+    // shower), the biggest hangs lowest (hardest to duck under).
+    const lowestRock = METEOR_R * ROCK_MAX * ROCK_HIT;
+    const highestRock = METEOR_R * ROCK_MIN * ROCK_HIT;
+    const meteorFloorHigh = METEOR_H - highestRock;   // underside, smallest rock
+    const meteorFloorLow = METEOR_H - lowestRock;     // underside, biggest rock
+    const showerCeil = METEOR_H + (METEOR_ROCKS - 1) * METEOR_GAP + highestRock;
+    const archUnder = ARCH_ROCK_H - METEOR_R * ARCH_ROCK_SCALE * ROCK_HIT;
+
+    // The head is not perfectly still: the travelling wave moves it by a small
+    // fraction of the creature's own amplitude. Every clearance is therefore
+    // measured against the bottom of that bob, plus a unit of slack — a margin
+    // derived from the creature rather than picked by hand, so a wrigglier body
+    // is automatically held to a wider margin.
+    const m = c.waveAmp * WAVE_HEAD_SHARE + 1;
+    const md = c.waveAmp * DUCK_WAVE_SCALE * WAVE_HEAD_SHARE + 1;
+
     return {
-      clearsTallestBaguette: fullApex > BAGUETTE_MAX_H + r - c.standH + 8,
-      tapClearsArchLoaf: tapApex > ARCH_LOAF_H + r - c.standH + 3,
-      tapStaysUnderArchRock: tapApex < archUnder - r - c.standH - 3,
+      clearsTallestBaguette: fullApex > BAGUETTE_MAX_H + r - c.standH + m,
+      tapClearsArchLoaf: tapApex > ARCH_LOAF_H + r - c.standH + m,
+      tapStaysUnderArchRock: tapApex < archUnder - r - c.standH - m,
       holdClipsArchRock: fullApex > archUnder - r - c.standH,
-      standingIsHitByMeteor: c.standH + r > meteorBottom + 4,
-      duckingClearsMeteor: c.duckH + rd < meteorBottom - 4,
-      showerIsUnjumpable: c.standH + fullApex - r < showerTop,
+      standingIsHitByMeteor: c.standH + r > meteorFloorHigh + m,
+      duckingClearsMeteor: c.duckH + rd < meteorFloorLow - md,
+      showerIsUnjumpable: c.standH + fullApex - r < showerCeil - m,
     };
   }
 
@@ -617,17 +666,17 @@
     const n = c.segments;
     const spacing = c.spacing * (1 + 0.05 * worm.duckT);
     const baseR = c.headR * (1 - (1 - DUCK_SCALE) * worm.duckT);
-    const amp = c.waveAmp * (1 - 0.57 * worm.duckT) * (worm.onGround ? 1 : 0.5);
+    const amp = c.waveAmp * (1 - (1 - DUCK_WAVE_SCALE) * worm.duckT) * (worm.onGround ? 1 : 0.5);
     const pts = [];
 
     for (let i = 0; i < n; i++) {
       const t = n > 1 ? i / (n - 1) : 0;
       // The tail whips wide while the head barely stirs — that's the wriggle.
-      const a = amp * (0.06 + 0.94 * Math.pow(t, 1.25));
+      const a = amp * (WAVE_HEAD_SHARE + (1 - WAVE_HEAD_SHARE) * Math.pow(t, 1.25));
       pts.push({
         x: headX - i * spacing,
         y: sampleTrail(traveled - i * spacing) + Math.sin(worm.wave - i * c.waveStep) * a,
-        r: baseR * (1.05 - c.taper * t * t),   // full-bodied, tapering to a point
+        r: baseR * (SPINE_BULGE - c.taper * t * t),  // full-bodied, tapering to a point
         nx: 0,
         ny: 0,
       });
@@ -674,7 +723,7 @@
   // probe gets up there too, and convert what's left into world distance.
   function clearableSpan(tallest, ws) {
     const c = cr();
-    const headR = c.headR * 1.05 * HIT_SHRINK;
+    const headR = headHitR(c, false);
     const rise = tallest + headR - c.standH;
     const disc = JUMP_V * JUMP_V - 2 * GRAVITY * rise;
     if (disc <= 0) return 0;                       // can't be jumped at all
@@ -743,7 +792,7 @@
         // so they streak in staggered and all level off together — and the
         // warning is the same at 300 units/s as at 800.
         vy: (targetY - startY) * vxMag / run,
-        r: METEOR_R * (0.86 + Math.random() * 0.22),
+        r: METEOR_R * (ROCK_MIN + Math.random() * (ROCK_MAX - ROCK_MIN)),
         verts, craters, spin: Math.random() * Math.PI * 2,
       });
     }
@@ -784,7 +833,7 @@
       // Bigger than a shower rock so it reads as a ceiling rather than as one
       // more thing to dodge. That lowers its underside, which the numbers above
       // already account for.
-      rock: { y: GROUND_Y - ARCH_ROCK_H, vy: 0, r: METEOR_R * 1.3, verts, craters,
+      rock: { y: GROUND_Y - ARCH_ROCK_H, vy: 0, r: METEOR_R * ARCH_ROCK_SCALE, verts, craters,
               spin: Math.random() * Math.PI * 2 },
     });
 
@@ -895,13 +944,13 @@
         const ry = GROUND_Y - o.loaf.h;
         for (const c of probes) {
           if (circleRect(c.x, c.y, c.r, o.x, ry, o.loaf.w, o.loaf.h)) return o;
-          if (circleCircle(c.x, c.y, c.r, o.x + o.w / 2, o.rock.y, o.rock.r * 0.84)) return o;
+          if (circleCircle(c.x, c.y, c.r, o.x + o.w / 2, o.rock.y, o.rock.r * ROCK_HIT)) return o;
         }
       } else {
         if (Math.abs(o.x - headX) > 90) continue;
         for (const rock of o.rocks) {
           for (const c of probes) {
-            if (circleCircle(c.x, c.y, c.r, o.x, rock.y, rock.r * 0.84)) return o;
+            if (circleCircle(c.x, c.y, c.r, o.x, rock.y, rock.r * ROCK_HIT)) return o;
           }
         }
       }
@@ -1342,20 +1391,24 @@
     ctx.stroke();
 
     // Segment rings, clipped to the body so they can't spill past the outline.
-    ctx.save();
-    tubePath(pts);
-    ctx.clip();
-    ctx.strokeStyle = edge;
-    ctx.globalAlpha = c.bands ? 0.4 : 0.2;
-    ctx.lineWidth = c.bands ? 3.4 : 1.6;
-    for (let i = 2; i < pts.length - 2; i += (c.rings || c.bands) ? 2 : 999) {
-      const p = pts[i];
-      ctx.beginPath();
-      ctx.moveTo(p.x + p.nx * p.r, p.y + p.ny * p.r);
-      ctx.lineTo(p.x - p.nx * p.r, p.y - p.ny * p.r);
-      ctx.stroke();
+    // A smooth-bodied creature gets none at all — skipping the loop entirely,
+    // not striding past it, which still drew the first one.
+    if (c.rings || c.bands) {
+      ctx.save();
+      tubePath(pts);
+      ctx.clip();
+      ctx.strokeStyle = edge;
+      ctx.globalAlpha = c.bands ? 0.4 : 0.2;
+      ctx.lineWidth = c.bands ? 3.4 : 1.6;
+      for (let i = 2; i < pts.length - 2; i += 2) {
+        const p = pts[i];
+        ctx.beginPath();
+        ctx.moveTo(p.x + p.nx * p.r, p.y + p.ny * p.r);
+        ctx.lineTo(p.x - p.nx * p.r, p.y - p.ny * p.r);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
-    ctx.restore();
 
     // Sheen: a slimmer tube riding the upper flank, so the highlight follows
     // every bend of the wave instead of sitting in fixed blobs.

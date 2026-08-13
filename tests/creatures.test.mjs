@@ -41,6 +41,11 @@ async function host(replacements = []) {
 const plainUrl = await host();
 const mixedUrl = await host(ALL_TYPES);
 const meteorUrl = await host(ALL_METEORS);
+// An empty world. Measuring the live body takes a while per creature, and a
+// bot-free run through a normal world dies to a baguette long before the roster
+// is done — after which the death freeze holds the pose, so every later reading
+// is stale rather than wrong-looking.
+const emptyUrl = await host([['if (spawnGap <= 0) spawnObstacle();', 'if (spawnGap <= 0) spawnGap = 1e9;']]);
 
 const allErrors = [];
 
@@ -68,6 +73,66 @@ const allErrors = [];
   // lost the feature: the hopper is the whole point of "different body plans".
   const plans = [...new Set(roster.map((c) => c.plan))];
   report.check('more than one body plan is in the roster', plans.length >= 2, plans.join(', '));
+
+  allErrors.push(...errors);
+  await context.close();
+}
+
+/* ---------- the envelope measures the body the game actually collides with ---------- *
+ * `creatureFits()` is only worth anything if its idea of the hitbox is the real
+ * one. It computes the head radius from the roster; the game builds it in
+ * `creatureSpine()` (where the head bulges past headR) and shrinks it in
+ * `hitFrom()`. Those are three separate places, and an envelope that quietly
+ * drops one of the factors understates every creature and loosens every rule
+ * derived from it — while still reporting that the whole roster fits.
+ *
+ * So compare them directly, standing and ducked, against the live spine. */
+{
+  const { context, page, errors } = await openPage(browser, emptyUrl, VIEWPORTS.desktop);
+  await page.keyboard.press('Space');
+  await sleep(500);
+
+  const count = await page.evaluate(() => window.__dbg.CREATURES.length);
+  const rows = [];
+
+  // `state` comes back with every sample. A dead or paused game freezes the
+  // spine, and a frozen spine reads as a plausible-but-stale radius — exactly
+  // the kind of quiet pass this test exists to prevent.
+  const sample = (ducked) => page.evaluate((d0) => {
+    const d = window.__dbg;
+    return {
+      name: d.creature.name,
+      state: d.state,
+      duckT: d.duckT,
+      live: d.spineHeadR * d.HIT_SHRINK,
+      envelope: d.headHitR(d.creature, d0),
+    };
+  }, ducked);
+
+  for (let i = 0; i < count; i++) {
+    await pickCreature(page, i);
+    await sleep(150);
+    const standing = await sample(false);
+
+    await page.keyboard.down('ArrowDown');
+    await sleep(400);                       // let duckT reach 1
+    const ducked = await sample(true);
+    await page.keyboard.up('ArrowDown');
+    await sleep(400);
+
+    rows.push({ standing, ducked });
+  }
+
+  for (const { standing, ducked } of rows) {
+    report.check(`${standing.name}: the envelope's standing hitbox is the real one`,
+      standing.state === 'running' && standing.duckT < 0.01
+        && Math.abs(standing.live - standing.envelope) < 0.01,
+      `state=${standing.state} duckT=${standing.duckT.toFixed(2)} live=${standing.live.toFixed(3)} envelope=${standing.envelope.toFixed(3)}`);
+    report.check(`${standing.name}: the envelope's ducked hitbox is the real one`,
+      ducked.state === 'running' && ducked.duckT > 0.99
+        && Math.abs(ducked.live - ducked.envelope) < 0.01,
+      `state=${ducked.state} duckT=${ducked.duckT.toFixed(2)} live=${ducked.live.toFixed(3)} envelope=${ducked.envelope.toFixed(3)}`);
+  }
 
   allErrors.push(...errors);
   await context.close();

@@ -32,7 +32,7 @@ const DEBUG_HOOK = `  window.__dbg = {
     get duckT(){return worm.duckT}, get wave(){return worm.wave}, get trailLen(){return trail.length},
     get spineHeadY(){return spine ? spine[0].y : null}, get spineHeadR(){return spine ? spine[0].r : null},
     get creature(){return cr()}, get creatureIndex(){return creatureIndex},
-    CREATURES, creatureFits, GROUND_Y,
+    CREATURES, creatureFits, GROUND_Y, headHitR, HIT_SHRINK,
   };
 `;
 

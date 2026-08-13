@@ -36,8 +36,15 @@ renderer, squashing on the ground and stretching mid-leap.
 What they can't be is a different *game*. Every fairness rule below is derived
 from the jump arc together with the creature's collision dimensions, so a body
 of the wrong size would quietly make ducking optional or an arch impossible
-while looking perfectly normal. `creatureFits()` states the four inequalities a
-body has to satisfy, and the test suite runs it over the whole roster.
+while looking perfectly normal. `creatureFits()` states the bounds a body has to
+satisfy, and the test suite runs it over the whole roster.
+
+Those bounds are only worth something if they describe the body the game
+actually collides with, so the envelope and the collision code share their
+constants rather than each restating them — one `headHitR()` for the head's true
+hit radius, one `ROCK_HIT` for how far a rock's hitbox is inset. The clearances
+are derived too: each creature's margin is its own head bob plus a unit of
+slack, so a wrigglier body is automatically held to a wider one.
 
 The whole thing honours `prefers-reduced-motion`: screen shake, particles and
 parallax drop out, and the game stays entirely playable.
