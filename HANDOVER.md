@@ -3,7 +3,7 @@
 This file was the kickoff prompt for the session that started this repo, back
 when it was an empty scaffold with no decided project. That's done — the repo
 is now **Worm Runner**, an endless runner. See [README.md](README.md) for what
-it is, how to run it, and the design rules behind the two obstacle types.
+it is, how to run it, and the design rules behind the three obstacle types.
 
 Kept only so the history makes sense; safe to delete.
 
@@ -14,10 +14,15 @@ Worth knowing before changing anything:
 - **No build step, no dependencies at runtime.** `index.html`, `style.css` and
   `game.js` are the whole game. Playwright is a dev dependency for the tests
   only — the shipped page never loads it.
-- **Two fairness invariants are enforced in code, not by hand-tuning.**
-  Baguette clusters are capped by what the jump arc can actually carry, and
-  meteor showers are built tall enough that they cannot be jumped. Both fall
-  out of `JUMP_V` / `GRAVITY`, so changing those changes the obstacles too.
+- **The fairness invariants are enforced in code, not by hand-tuning.**
+  Baguette clusters are capped by what the jump arc can actually carry, meteor
+  showers are built tall enough that they cannot be jumped, and arches are
+  geometrically impossible to clear. All of it falls out of `JUMP_V` /
+  `GRAVITY`, so changing those changes the obstacles too.
+- **A creature is physics, not a skin.** Each entry in `CREATURES` carries its
+  own head radius and standing/ducking heights, and the rules above are stated
+  in terms of those. `creatureFits()` is the envelope; add a creature outside it
+  and the game still looks fine while quietly being unwinnable, or trivial.
 - **`tests/` guards exactly that.** Run `npm test` after touching any movement
   or obstacle constant. The suite drives the real game in a real browser
   through real key events; it will tell you if the game has become unfair or

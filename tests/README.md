@@ -3,8 +3,8 @@
 ```sh
 npm ci               # Playwright — a dev dependency only, the game ships without it
 npx playwright install chromium
-npm test             # ~9 minutes
-npm run test:long    # ~12 minutes; runs past the point where speed hits its cap
+npm test             # ~12 minutes
+npm run test:long    # ~15 minutes; runs past the point where speed hits its cap
 ```
 
 Every suite drives the **real game in a real browser through real dispatched
@@ -14,7 +14,7 @@ right values.
 
 ## Why these exist
 
-Three properties of this game are derived from the jump arc rather than tuned by
+Four properties of this game are derived from the jump arc rather than tuned by
 hand, and all of them fail silently:
 
 - **Baguette clusters must always be clearable.** Cluster width is capped by
@@ -24,25 +24,39 @@ hand, and all of them fail silently:
   rather than decoration.
 - **Arches must punish all three wrong answers.** Ignore, duck, or hold the jump
   — each has to be fatal, or the obstacle isn't asking anything.
+- **Every creature must be inside the envelope.** The three rules above are
+  stated in terms of a body's head radius, standing height and ducking height.
+  Each entry in `CREATURES` carries its own, so a creature is a set of physics
+  constants wearing a costume, not a recolour.
 
-Change `JUMP_V`, `GRAVITY`, `SEG_SPACING`, `HIT_PROBES`, `METEOR_ROCKS`, an
-`ARCH_*` height or any baguette dimension and you change all of them — in ways
-you will not notice by playing
-for a minute, because an unfair cluster or a jumpable shower appears rarely and
-looks entirely normal when it does. **Run `npm test` after touching any of
-those.**
+Change `JUMP_V`, `GRAVITY`, `HIT_PROBES`, `METEOR_ROCKS`, an `ARCH_*` height,
+any baguette dimension or any entry in `CREATURES` and you change all of them —
+in ways you will not notice by playing for a minute, because an unfair cluster
+or a jumpable shower appears rarely and looks entirely normal when it does.
+**Run `npm test` after touching any of those.**
 
 ## Suites
 
 | File | Guards |
 | --- | --- |
-| `fairness.test.mjs` | The rules above. A bot plays near-perfectly, so a death means the game was unfair rather than that the bot was sloppy. |
-| `behaviour.test.mjs` | Controls appearing per device, score, death, restart, colour persistence, and that the death pose actually freezes. |
+| `fairness.test.mjs` | The three obstacle rules. A bot plays near-perfectly, so a death means the game was unfair rather than that the bot was sloppy. |
+| `behaviour.test.mjs` | Controls appearing per device, score, death, restart, choice persistence, and that the death pose actually freezes. |
+| `creatures.test.mjs` | The roster: every body inside the envelope, each one actually painting, switching rebuilding the body rather than just the colour, and the extremes of the roster playing the real game. |
 
 The sharpest assertion is **"meteor showers are NOT jumpable"**, which plays
 meteors *wrongly* on purpose and requires that to be fatal. It's the difference
 between ducking being required and ducking being optional — and it's exactly
-what regresses if the jump gets stronger or the shower gets shorter.
+what regresses if the jump gets stronger or the shower gets shorter. The
+creatures suite runs it again as the creature whose hitbox reaches highest,
+since that is the body it fails for first.
+
+Two things in the creature suite are worth knowing about. It picks its bot
+subjects by *property* rather than by name — the one with a different body plan,
+and the one with the greatest `standH - headR * 0.8` — so adding a creature that
+becomes a new extreme puts it under test automatically. And it samples canvas
+pixels around the head for each creature's own body colour, because a body or
+decoration that silently fails to paint looks exactly like one that was never
+selected.
 
 ## How variants work
 
