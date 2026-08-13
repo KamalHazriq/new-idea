@@ -33,21 +33,9 @@
   const MAX_SPEED = 820;
   const ACCEL = 6;               // units/s gained per second
 
-  const SEGMENTS = 16;           // spine samples; the body is drawn as one
-  const SEG_SPACING = 7.2;       // continuous tube through them, not as beads
-  const WAVE_STEP = 0.5;         // ≈1.2 wavelengths along the body
-  // Wriggle amplitude ramps from almost nothing at the head to full at the tail.
-  // Beyond looking right — the head leads, the body follows — this keeps the
-  // collision probes at a predictable height: a bobbing head would sometimes
-  // duck under a meteor on its own, which would wreck the duck mechanic.
-  const WAVE_AMP = 14;
-  const HEAD_R = 11;
-  const STAND_H = 22;            // head centre above the ground, standing
-  const DUCK_H = 10;             // …and flattened
-
   // Only the front of the worm can collide. The tail replays the head's height
   // from earlier, so it hangs low through a jump; making it lethal would mean
-  // the worm gets killed by a baguette it has visibly already cleared.
+  // the creature gets killed by a baguette it has visibly already cleared.
   const HIT_PROBES = 3;
   const HIT_SHRINK = 0.8;        // hitboxes sit inside the drawn body
 
@@ -96,16 +84,102 @@
 
   const JUMP_BUFFER = 0.13;      // a jump pressed this soon before landing still counts
 
-  // Worm colours. `rainbow` is painted as a hue sweep down the body instead of
-  // flat fills, so it needs no colours of its own.
-  const SKINS = [
-    { name: 'Green',   body: '#5fbf5f', dark: '#2f7a3c', light: '#95e48f' },
-    { name: 'Rainbow', rainbow: true,   swatch: 'conic-gradient(#e5484d,#f5a524,#f3e04a,#46a758,#3b9eff,#8e4ec6,#e5484d)' },
-    { name: 'Coral',   body: '#f4795b', dark: '#a83b26', light: '#ffb59e' },
-    { name: 'Ocean',   body: '#4aa8d8', dark: '#1f5f85', light: '#9adcf5' },
-    { name: 'Grape',   body: '#9b6bd6', dark: '#5b2f8f', light: '#cbaaf0' },
-    { name: 'Gold',    body: '#e8b53c', dark: '#9a6c12', light: '#f7dc93' },
+  /* ------------------------------------------------------------------ *
+   * Creatures
+   *
+   * Every creature is one parameterised spine: samples that follow the head's
+   * height through the trail buffer with a travelling wave on top. Only the
+   * *rendering* branches on `plan` — collision, physics and the trail are
+   * identical for all of them, so a new creature can never accidentally get
+   * its own physics.
+   *
+   * headR / standH / duckH are real collision dimensions, not decoration, and
+   * they are exactly what the three fairness rules are derived from. That puts
+   * hard bounds on how big or small a creature may be (see the note above
+   * clearableSpan, and `creatureFits()`, which the test suite runs over every
+   * entry here):
+   *
+   *   7.6 <  standH - r  < 34.4   below: a tap cannot clear the arch loaf
+   *                                above: the jump clears a meteor shower and
+   *                                       ducking stops being a mechanic
+   *  28.2 <  standH + r  < 88.3   below: a meteor passes over a standing head
+   *                                above: a tap cannot stay under the arch rock
+   *          duckH  + rd < 20.2   above: ducking does not clear a meteor
+   *
+   * ...where r = headR * HIT_SHRINK and rd = r * DUCK_SCALE. `creatureFits()`
+   * also checks that the tallest baguette is clearable and that a held jump
+   * clips the arch rock; with this jump arc neither can fail for any plausible
+   * body, but they are the two rules that break first if the arc changes.
+   * ------------------------------------------------------------------ */
+
+  const DUCK_SCALE = 0.62;       // body radius multiplier when flattened
+
+  const CREATURES = [
+    { name: 'Worm', plan: 'tube',
+      headR: 11, standH: 22, duckH: 10,
+      segments: 16, spacing: 7.2, waveStep: 0.5, waveAmp: 14, taper: 0.85,
+      body: '#5fbf5f', dark: '#2f7a3c', light: '#95e48f', rings: true },
+
+    { name: 'Rainbow Worm', plan: 'tube', rainbow: true,
+      headR: 11, standH: 22, duckH: 10,
+      segments: 16, spacing: 7.2, waveStep: 0.5, waveAmp: 14, taper: 0.85,
+      dark: '#2f7a3c', rings: true,
+      swatch: 'conic-gradient(#e5484d,#f5a524,#f3e04a,#46a758,#3b9eff,#8e4ec6,#e5484d)' },
+
+    { name: 'Snake', plan: 'tube',
+      headR: 10, standH: 21.5, duckH: 9.5,
+      segments: 20, spacing: 6.4, waveStep: 0.62, waveAmp: 18, taper: 0.92,
+      body: '#8ec63f', dark: '#42701a', light: '#cfeb92', tongue: true, bands: true },
+
+    { name: 'Caterpillar', plan: 'tube',
+      headR: 13, standH: 24, duckH: 11,
+      segments: 12, spacing: 9.5, waveStep: 0.8, waveAmp: 10, taper: 0.3,
+      body: '#f2a03d', dark: '#9c530d', light: '#ffd291', rings: true,
+      legs: true, antennae: true },
+
+    { name: 'Eel', plan: 'tube',
+      headR: 10, standH: 21, duckH: 9.5,
+      segments: 18, spacing: 7, waveStep: 0.58, waveAmp: 20, taper: 0.8,
+      body: '#5b73c4', dark: '#27356b', light: '#aebcf2', fins: true },
+
+    { name: 'Dragon', plan: 'tube',
+      headR: 12.5, standH: 25, duckH: 11,
+      segments: 16, spacing: 8, waveStep: 0.5, waveAmp: 13, taper: 0.8,
+      body: '#c0453f', dark: '#661917', light: '#f2998f',
+      spikes: true, horns: true },
+
+    // The odd one out: a compact body, so its spine is three fat samples rather
+    // than a long ribbon, and it gets its own renderer on top.
+    { name: 'Frog', plan: 'hopper',
+      headR: 14, standH: 26, duckH: 12,
+      segments: 3, spacing: 8.5, waveStep: 0.9, waveAmp: 3, taper: 0.35,
+      body: '#4bbf6a', dark: '#1c6a35', light: '#a3ecb4' },
   ];
+
+  const LONGEST_BODY = Math.max(...CREATURES.map((c) => c.segments * c.spacing));
+
+  // Which of the fairness rules a creature's dimensions satisfy. The test suite
+  // runs this over every entry: the rules are derived from these numbers, so a
+  // creature outside the envelope doesn't merely look different — it quietly
+  // plays a different, possibly unwinnable, game.
+  function creatureFits(c) {
+    const r = c.headR * HIT_SHRINK;
+    const rd = r * DUCK_SCALE;
+    const fullApex = JUMP_V * JUMP_V / (2 * GRAVITY);
+    const tapApex = (JUMP_V * JUMP_CUT) ** 2 / (2 * GRAVITY);
+    const meteorBottom = METEOR_H - METEOR_R * 0.84;
+    const showerTop = METEOR_H + (METEOR_ROCKS - 1) * METEOR_GAP + METEOR_R;
+    const archUnder = ARCH_ROCK_H - METEOR_R * 1.3 * 0.84;
+    return {
+      clearsTallestBaguette: fullApex > BAGUETTE_MAX_H + r - c.standH + 8,
+      tapClearsArchLoaf: tapApex > ARCH_LOAF_H + r - c.standH + 3,
+      tapStaysUnderArchRock: tapApex < archUnder - r - c.standH - 3,
+      holdClipsArchRock: fullApex > archUnder - r - c.standH,
+      standingIsHitByMeteor: c.standH + r > meteorBottom + 4,
+      duckingClearsMeteor: c.duckH + rd < meteorBottom - 4,
+      showerIsUnjumpable: c.standH + fullApex - r < showerTop,
+    };
+  }
 
   const HITSTOP = 0.16;          // seconds the impact frame is held
   const SHAKE_MAX = 7;
@@ -127,7 +201,7 @@
   ];
 
   const COL = {
-    // Live body colours come from SKINS; these are the corpse.
+    // Live body colours come from CREATURES; these are the corpse.
     bodyDead: '#9aa08f', bodyDeadDark: '#6b7062',
     crust: '#e2b273', crustDark: '#a9743a', crumb: '#f8dfb2',
     rock: '#6d665f', rockDark: '#423d38', rockLight: '#9a9189',
@@ -183,7 +257,7 @@
   let flash = 0;
   let culprit = null;
 
-  const worm = { y: GROUND_Y - STAND_H, vy: 0, onGround: true, ducking: false, duckT: 0, wave: 0 };
+  const worm = { y: GROUND_Y - CREATURES[0].standH, vy: 0, onGround: true, ducking: false, duckT: 0, wave: 0 };
   const trail = [];              // [{ d, y }] ascending by d — head height history
   const obstacles = [];
   const particles = [];
@@ -218,12 +292,13 @@
     else if (reducedMotionQuery.addListener) reducedMotionQuery.addListener(onChange);
   }
 
-  let skinIndex = (() => {
+  let creatureIndex = (() => {
     try {
       const n = parseInt(localStorage.getItem(SKIN_KEY), 10);
-      return Number.isInteger(n) && n >= 0 && n < SKINS.length ? n : 0;
+      return Number.isInteger(n) && n >= 0 && n < CREATURES.length ? n : 0;
     } catch { return 0; }
   })();
+  const cr = () => CREATURES[creatureIndex];
   const learned = (key) => {
     try { return localStorage.getItem(key) === '1'; } catch { return false; }
   };
@@ -233,7 +308,7 @@
   let hasDucked = learned(DUCKED_KEY);
   let hasHopped = learned(HOPPED_KEY);
 
-  const MAX_LOOKBACK = SEGMENTS * SEG_SPACING * 1.6;
+  const MAX_LOOKBACK = LONGEST_BODY * 1.6;
 
   function readHi() {
     try { return parseInt(localStorage.getItem(HI_KEY), 10) || 0; } catch { return 0; }
@@ -364,7 +439,7 @@
     worldW = canvas.width / scale;
     widthFactor = worldW / REF_W;
     // Leave room for the whole body behind the head without crowding the road.
-    headX = Math.min(210, Math.max(SEGMENTS * SEG_SPACING + 12, worldW * 0.24));
+    headX = Math.min(210, Math.max(LONGEST_BODY + 12, worldW * 0.24));
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     palKey = '';                 // gradient is tied to the transform; rebuild it
     updatePalette();
@@ -376,8 +451,8 @@
    * Setup / reset
    * ------------------------------------------------------------------ */
 
-  function standY() { return GROUND_Y - STAND_H; }
-  function duckY() { return GROUND_Y - DUCK_H; }
+  function standY() { return GROUND_Y - cr().standH; }
+  function duckY() { return GROUND_Y - cr().duckH; }
   function restY() { return standY() + (duckY() - standY()) * worm.duckT; }
   function vx() { return speed * widthFactor; }
 
@@ -414,7 +489,7 @@
     // Seed the trail so the body starts stretched out, not piled on the head.
     trail.length = 0;
     for (let d = -MAX_LOOKBACK; d <= 0; d += 6) trail.push({ d, y: worm.y });
-    spine = wormSpine();
+    spine = creatureSpine();
 
     buildScenery();
     updateHud();
@@ -463,7 +538,7 @@
     hitstop = HITSTOP;
     shake = reducedMotion ? 0 : SHAKE_MAX;
     flash = 1;
-    burst(headX, worm.y, 16, SKINS[skinIndex].dark || '#2f7a3c');
+    burst(headX, worm.y, 16, cr().dark);
     sfx.die();
     newBest = Math.floor(score) > hiScore && Math.floor(score) > 0;
     if (newBest) {
@@ -537,20 +612,22 @@
    * Worm geometry — shared by the renderer and the collision test
    * ------------------------------------------------------------------ */
 
-  function wormSpine() {
-    const spacing = SEG_SPACING * (1 + 0.05 * worm.duckT);
-    const baseR = HEAD_R * (1 - 0.38 * worm.duckT);
-    const amp = WAVE_AMP * (1 - 0.57 * worm.duckT) * (worm.onGround ? 1 : 0.5);
+  function creatureSpine() {
+    const c = cr();
+    const n = c.segments;
+    const spacing = c.spacing * (1 + 0.05 * worm.duckT);
+    const baseR = c.headR * (1 - (1 - DUCK_SCALE) * worm.duckT);
+    const amp = c.waveAmp * (1 - 0.57 * worm.duckT) * (worm.onGround ? 1 : 0.5);
     const pts = [];
 
-    for (let i = 0; i < SEGMENTS; i++) {
-      const t = i / (SEGMENTS - 1);
+    for (let i = 0; i < n; i++) {
+      const t = n > 1 ? i / (n - 1) : 0;
       // The tail whips wide while the head barely stirs — that's the wriggle.
       const a = amp * (0.06 + 0.94 * Math.pow(t, 1.25));
       pts.push({
         x: headX - i * spacing,
-        y: sampleTrail(traveled - i * spacing) + Math.sin(worm.wave - i * WAVE_STEP) * a,
-        r: baseR * (1.05 - 0.85 * t * t),   // full-bodied, tapering to a point
+        y: sampleTrail(traveled - i * spacing) + Math.sin(worm.wave - i * c.waveStep) * a,
+        r: baseR * (1.05 - c.taper * t * t),   // full-bodied, tapering to a point
         nx: 0,
         ny: 0,
       });
@@ -558,9 +635,9 @@
 
     // Unit normal at each sample, from the local head-ward tangent. The tube
     // renderer offsets along these to build the two edges of the body.
-    for (let i = 0; i < SEGMENTS; i++) {
+    for (let i = 0; i < n; i++) {
       const ahead = pts[Math.max(0, i - 1)];
-      const behind = pts[Math.min(SEGMENTS - 1, i + 1)];
+      const behind = pts[Math.min(n - 1, i + 1)];
       const tx = ahead.x - behind.x;
       const ty = ahead.y - behind.y;
       const len = Math.hypot(tx, ty) || 1;
@@ -596,13 +673,14 @@
   // the top of the tallest loaf, subtract the lag before the rearmost collision
   // probe gets up there too, and convert what's left into world distance.
   function clearableSpan(tallest, ws) {
-    const headR = HEAD_R * 1.05 * HIT_SHRINK;
-    const rise = tallest + headR - STAND_H;
+    const c = cr();
+    const headR = c.headR * 1.05 * HIT_SHRINK;
+    const rise = tallest + headR - c.standH;
     const disc = JUMP_V * JUMP_V - 2 * GRAVITY * rise;
     if (disc <= 0) return 0;                       // can't be jumped at all
 
     const airborne = Math.sqrt(disc) * 2 / GRAVITY;  // t1 - t0
-    const reach = (HIT_PROBES - 1) * SEG_SPACING;    // rear probe's offset
+    const reach = (HIT_PROBES - 1) * c.spacing;      // rear probe's offset
     const clear = airborne - reach / Math.max(1, ws);
     return Math.max(0, clear * ws - (reach + 2 * headR));
   }
@@ -913,7 +991,7 @@
       pushTrail();
       // Computed once here and reused by both the collision test and the
       // renderer — it used to be built twice per frame from the same inputs.
-      spine = wormSpine();
+      spine = creatureSpine();
     }
 
     /* --- death feedback --- */
@@ -1229,14 +1307,31 @@
     return g;
   }
 
-  function drawWorm(pts) {
+  // Colours are shared by both body plans, so a dead frog greys out the same
+  // way a dead worm does.
+  function creaturePalette(pts) {
+    const c = cr();
     const dead = state === 'over';
-    const skin = SKINS[skinIndex];
-    const rainbow = !!skin.rainbow && !dead;
+    const rainbow = !!c.rainbow && !dead;
+    return {
+      c,
+      dead,
+      fill: dead ? COL.bodyDead : (rainbow ? rainbowGradient(pts, 58, 1) : c.body),
+      edge: dead ? COL.bodyDeadDark : (rainbow ? rainbowGradient(pts, 30, 1) : c.dark),
+      sheen: dead ? 'rgba(255,255,255,0.18)' : (rainbow ? 'rgba(255,255,255,0.75)' : c.light),
+    };
+  }
 
-    const fill = dead ? COL.bodyDead : (rainbow ? rainbowGradient(pts, 58, 1) : skin.body);
-    const edge = dead ? COL.bodyDeadDark : (rainbow ? rainbowGradient(pts, 30, 1) : skin.dark);
-    const sheen = dead ? 'rgba(255,255,255,0.18)' : (rainbow ? 'rgba(255,255,255,0.75)' : skin.light);
+  function drawCreature(pts) {
+    if (cr().plan === 'hopper') drawHopper(pts);
+    else drawTube(pts);
+  }
+
+  function drawTube(pts) {
+    const { c, dead, fill, edge, sheen } = creaturePalette(pts);
+
+    if (c.fins) drawFins(pts, edge);
+    if (c.legs) drawLegs(pts, edge);
 
     tubePath(pts);
     ctx.fillStyle = fill;
@@ -1251,9 +1346,9 @@
     tubePath(pts);
     ctx.clip();
     ctx.strokeStyle = edge;
-    ctx.globalAlpha = 0.2;
-    ctx.lineWidth = 1.6;
-    for (let i = 2; i < pts.length - 2; i += 2) {
+    ctx.globalAlpha = c.bands ? 0.4 : 0.2;
+    ctx.lineWidth = c.bands ? 3.4 : 1.6;
+    for (let i = 2; i < pts.length - 2; i += (c.rings || c.bands) ? 2 : 999) {
       const p = pts[i];
       ctx.beginPath();
       ctx.moveTo(p.x + p.nx * p.r, p.y + p.ny * p.r);
@@ -1309,6 +1404,236 @@
     ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.arc(h.x + h.r * 0.28, h.y + h.r * 0.28, h.r * 0.34, -0.5, 1.1);
+    ctx.stroke();
+
+    if (c.spikes) drawSpikes(pts, edge);
+    if (c.horns) drawHorns(h, edge);
+    if (c.antennae) drawAntennae(h, edge);
+    if (c.tongue && !dead) drawTongue(h, '#e5484d');
+  }
+
+  /* ---------- creature decorations ---------- *
+   * All of these hang off the spine's points and normals, so they bend with the
+   * body for free rather than needing their own animation. */
+
+  const forwardOf = (p) => ({ x: p.ny, y: -p.nx });
+
+  function drawSpikes(pts, edge) {
+    ctx.fillStyle = edge;
+    for (let i = 1; i < pts.length - 2; i++) {
+      const p = pts[i];
+      const h = p.r * 0.95;
+      const f = forwardOf(p);
+      ctx.beginPath();
+      ctx.moveTo(p.x - p.nx * p.r * 0.9 + f.x * p.r * 0.5, p.y - p.ny * p.r * 0.9 + f.y * p.r * 0.5);
+      ctx.lineTo(p.x - p.nx * (p.r + h), p.y - p.ny * (p.r + h));
+      ctx.lineTo(p.x - p.nx * p.r * 0.9 - f.x * p.r * 0.5, p.y - p.ny * p.r * 0.9 - f.y * p.r * 0.5);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  function drawHorns(h, edge) {
+    const f = forwardOf(h);
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(h.x - h.nx * h.r * 0.5 + f.x * side * h.r * 0.3,
+                 h.y - h.ny * h.r * 0.5 + f.y * side * h.r * 0.3);
+      ctx.lineTo(h.x - h.nx * h.r * 1.7 - f.x * h.r * 0.6 + f.x * side * h.r * 0.4,
+                 h.y - h.ny * h.r * 1.7 - f.y * h.r * 0.6 + f.y * side * h.r * 0.4);
+      ctx.stroke();
+    }
+  }
+
+  function drawAntennae(h, edge) {
+    const f = forwardOf(h);
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    for (const side of [-0.5, 0.5]) {
+      const tipX = h.x - h.nx * h.r * 2.2 + f.x * h.r * (0.9 + side);
+      const tipY = h.y - h.ny * h.r * 2.2 + f.y * h.r * (0.9 + side);
+      ctx.beginPath();
+      ctx.moveTo(h.x - h.nx * h.r * 0.4, h.y - h.ny * h.r * 0.4);
+      ctx.quadraticCurveTo(h.x - h.nx * h.r * 1.6 + f.x * h.r * 0.3,
+                           h.y - h.ny * h.r * 1.6 + f.y * h.r * 0.3, tipX, tipY);
+      ctx.stroke();
+      ctx.fillStyle = edge;
+      ctx.beginPath();
+      ctx.arc(tipX, tipY, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawTongue(h, colour) {
+    const f = forwardOf(h);
+    const flick = Math.max(0, Math.sin(worm.wave * 1.7));   // darts in and out
+    if (flick < 0.35) return;
+    const L = h.r * (1.1 + flick * 1.5);
+    const bx = h.x + f.x * h.r * 0.95;
+    const by = h.y + f.y * h.r * 0.95;
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + f.x * L, by + f.y * L);
+    ctx.stroke();
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(bx + f.x * L, by + f.y * L);
+      ctx.lineTo(bx + f.x * L * 1.3 + h.nx * side * L * 0.35,
+                 by + f.y * L * 1.3 + h.ny * side * L * 0.35);
+      ctx.stroke();
+    }
+  }
+
+  function drawLegs(pts, edge) {
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 2.4;
+    ctx.lineCap = 'round';
+    for (let i = 1; i < pts.length - 1; i++) {
+      const p = pts[i];
+      // Alternate the swing per leg pair so they look like they are walking.
+      const swing = Math.sin(worm.wave * 2 + i * 1.6) * p.r * 0.4;
+      const f = forwardOf(p);
+      ctx.beginPath();
+      ctx.moveTo(p.x + p.nx * p.r * 0.6, p.y + p.ny * p.r * 0.6);
+      ctx.lineTo(p.x + p.nx * (p.r + p.r * 0.55) + f.x * swing,
+                 p.y + p.ny * (p.r + p.r * 0.55) + f.y * swing);
+      ctx.stroke();
+    }
+  }
+
+  function drawFins(pts, edge) {
+    // One ribbon along the top and one along the bottom, offset from the spine.
+    ctx.fillStyle = edge;
+    ctx.globalAlpha = 0.5;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        const out = p.r * (1 + 0.55 * Math.sin(i * 0.9 + worm.wave));
+        const x = p.x + p.nx * side * out;
+        const y = p.y + p.ny * side * out;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      for (let i = pts.length - 1; i >= 0; i--) {
+        const p = pts[i];
+        ctx.lineTo(p.x + p.nx * side * p.r * 0.5, p.y + p.ny * side * p.r * 0.5);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---------- the hopper ---------- *
+   * A frog has no ribbon to sweep, so it gets its own body: an oval that
+   * squashes on the ground and stretches in the air, with legs that fold and
+   * kick. It still rides the same spine, so its collision is the same shape as
+   * everything else's — only what you see is different. */
+  function drawHopper(pts) {
+    const { dead, fill, edge, sheen } = creaturePalette(pts);
+    const h = pts[0];
+    const air = !worm.onGround;
+    const bob = Math.sin(worm.wave * 1.6);
+
+    // Squash while running, stretch while airborne.
+    const rx = h.r * (air ? 1.18 : 1.02 + bob * 0.05);
+    const ry = h.r * (air ? 0.86 : 0.96 - bob * 0.05);
+    const cx = h.x - h.r * 0.35;
+    const cy = h.y;
+
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = edge;
+
+    // Back legs: folded when grounded, kicked out behind in the air.
+    const kick = air ? 1 : 0.45 + 0.25 * Math.max(0, bob);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineWidth = h.r * 0.38;
+    for (const side of [-1, 1]) {
+      const hipX = cx - rx * 0.35;
+      const hipY = cy + ry * (0.35 + side * 0.18);
+      ctx.beginPath();
+      ctx.moveTo(hipX, hipY);
+      ctx.quadraticCurveTo(hipX - rx * 0.9 * kick, hipY - ry * 0.5 * kick,
+                           hipX - rx * (0.5 + kick), hipY + ry * (0.65 - 0.25 * kick));
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Body.
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.stroke();
+
+    // Front legs, tucked under the chin.
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineWidth = h.r * 0.26;
+    ctx.strokeStyle = edge;
+    for (const side of [-1, 1]) {
+      const sx = cx + rx * 0.5;
+      const sy = cy + ry * (0.3 + side * 0.15);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + rx * 0.35, sy + ry * 0.5);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Sheen across the back.
+    ctx.globalAlpha = dead ? 0.16 : 0.4;
+    ctx.fillStyle = sheen;
+    ctx.beginPath();
+    ctx.ellipse(cx - rx * 0.1, cy - ry * 0.42, rx * 0.55, ry * 0.28, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Eyes: two domes on top of the head, which is the front of the oval.
+    const ex = cx + rx * 0.52;
+    const ey = cy - ry * 0.62;
+    for (const side of [0, 1]) {
+      const ox = ex - side * rx * 0.28;
+      const oy = ey + side * ry * 0.1;
+      ctx.beginPath();
+      ctx.arc(ox, oy, h.r * 0.3, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.stroke();
+      if (dead) {
+        ctx.strokeStyle = edge;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(ox - 2.4, oy - 2.4); ctx.lineTo(ox + 2.4, oy + 2.4);
+        ctx.moveTo(ox + 2.4, oy - 2.4); ctx.lineTo(ox - 2.4, oy + 2.4);
+        ctx.stroke();
+        ctx.lineWidth = 2;
+      } else {
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(ox, oy, h.r * 0.17, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#22301f';
+        ctx.beginPath();
+        ctx.arc(ox + h.r * 0.05, oy, h.r * 0.09, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Mouth.
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(cx + rx * 0.42, cy + ry * 0.05, h.r * 0.3, -0.35, 0.9);
     ctx.stroke();
   }
 
@@ -1400,7 +1725,7 @@
 
     if (culprit && flash > 0) drawCulprit(culprit);
 
-    drawWorm(spine);
+    drawCreature(spine);
     drawParticles();
 
     if (state === 'running' && hintObstacle && performance.now() < hintUntil
@@ -1498,18 +1823,27 @@
   });
   setMuted(muted);
 
-  function setSkin(i) {
-    skinIndex = ((i % SKINS.length) + SKINS.length) % SKINS.length;
-    const skin = SKINS[skinIndex];
-    swatch.style.background = skin.swatch || skin.body;
-    btnSkin.setAttribute('aria-label', `Worm colour: ${skin.name}. Tap to change.`);
-    btnSkin.title = skin.name;
-    try { localStorage.setItem(SKIN_KEY, String(skinIndex)); } catch { /* private mode */ }
+  function setCreature(i) {
+    creatureIndex = ((i % CREATURES.length) + CREATURES.length) % CREATURES.length;
+    const c = cr();
+    swatch.style.background = c.swatch || c.body;
+    btnSkin.setAttribute('aria-label', `Creature: ${c.name}. Tap to change.`);
+    btnSkin.title = c.name;
+    try { localStorage.setItem(SKIN_KEY, String(creatureIndex)); } catch { /* private mode */ }
+
+    // Creatures have different collision dimensions, so everything measured
+    // from them has to be rebuilt on a switch: resting height, the seeded
+    // trail, and this frame's spine. Otherwise the body keeps the previous
+    // creature's height until the next landing.
+    if (worm.onGround) worm.y = restY();
+    trail.length = 0;
+    for (let d = traveled - MAX_LOOKBACK; d <= traveled; d += 6) trail.push({ d, y: worm.y });
+    spine = creatureSpine();
   }
 
   btnPause.addEventListener('click', () => setPaused(!paused));
-  btnSkin.addEventListener('click', () => setSkin(skinIndex + 1));
-  setSkin(skinIndex);
+  btnSkin.addEventListener('click', () => setCreature(creatureIndex + 1));
+  setCreature(creatureIndex);
 
   stage.addEventListener('pointerdown', (e) => { e.preventDefault(); pressJump('stage'); });
   stage.addEventListener('pointerup', () => releaseJump('stage'));

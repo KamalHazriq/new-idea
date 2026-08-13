@@ -2,7 +2,7 @@
   "name": "worm-runner",
   "version": "1.0.0",
   "private": true,
-  "description": "An endless runner: a wiggling worm hurdles baguettes and ducks under meteor showers.",
+  "description": "An endless runner: a wriggling creature hurdles baguettes, ducks meteor showers and hops arches.",
   "type": "module",
   "scripts": {
     "start": "npx --yes http-server . -p 8000 -c-1",

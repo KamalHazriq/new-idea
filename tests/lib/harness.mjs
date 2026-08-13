@@ -31,7 +31,8 @@ const DEBUG_HOOK = `  window.__dbg = {
     get speed(){return speed}, get score(){return score}, get culprit(){return culprit},
     get duckT(){return worm.duckT}, get wave(){return worm.wave}, get trailLen(){return trail.length},
     get spineHeadY(){return spine ? spine[0].y : null}, get spineHeadR(){return spine ? spine[0].r : null},
-    GROUND_Y,
+    get creature(){return cr()}, get creatureIndex(){return creatureIndex},
+    CREATURES, creatureFits, GROUND_Y,
   };
 `;
 
@@ -204,8 +205,25 @@ requestAnimationFrame(tick);
 `;
 }
 
+/**
+ * Select a creature the way a player does — by clicking the picker — rather
+ * than by poking `creatureIndex`. The click path is what rebuilds the resting
+ * height, the trail and the spine, so a test that skipped it would be running
+ * against a state the game can never actually be in.
+ */
+export async function pickCreature(page, index) {
+  const n = await page.evaluate(() => window.__dbg.CREATURES.length);
+  const start = await page.evaluate(() => window.__dbg.creatureIndex);
+  const clicks = ((index - start) % n + n) % n;
+  for (let i = 0; i < clicks; i++) await page.locator('#btnSkin').click();
+  const now = await page.evaluate(() => window.__dbg.creatureIndex);
+  if (now !== index) throw new Error(`harness: wanted creature ${index}, got ${now}`);
+  return page.evaluate(() => window.__dbg.creature.name);
+}
+
 export async function runBot(browser, url, device, seconds, options = {}) {
   const { context, page, errors } = await openPage(browser, url, device);
+  if (options.creature !== undefined) await pickCreature(page, options.creature);
   await page.evaluate(botScript(options));
   await sleep(seconds * 1000);
   const bot = await page.evaluate(() => window.__bot);
